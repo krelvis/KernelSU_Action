@@ -171,34 +171,124 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          set -x
-          # Recover from any pre-existing broken dpkg state instead of dying on it.
-          sudo dpkg --configure -a || true
-          sudo apt-get -y -o Dpkg::Options::="--force-confdef" \
-                          -o Dpkg::Options::="--force-confold" -f install || true
-          sudo apt-get update
+          set -o pipefail
 
-          # Installed one by one and skipped when present, so a single bad
-          # package name reports itself instead of producing a bare exit code 100.
-          PKGS="bc bison build-essential ccache cpio curl device-tree-compiler flex
-                git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd
-                libncurses-dev"
-          missing=""
-          for p in $PKGS; do
-            if ! dpkg -s "$p" >/dev/null 2>&1; then
-              missing="$missing $p"
+          # Real cause of the earlier exit-100 failures: the runner image points
+          # apt at azure.archive.ubuntu.com, which does not resolve from this
+          # runner ("Temporary failure resolving"). apt then burns ~8 minutes
+          # timing out every repository and exits 100. So: rewrite the sources to
+          # a plain upstream mirror, try a few, and decide whether the build can
+          # continue by looking for the actual host tools -- not by trusting apt.
+          APT_LOG="${RUNNER_TEMP:-/tmp}/apt.log"
+          : > "$APT_LOG"
+
+          # shellcheck source=/dev/null
+          . /etc/os-release
+          SUITE="${UBUNTU_CODENAME:-${VERSION_CODENAME:-noble}}"
+          echo "ubuntu codename: $SUITE"
+
+          APT=(
+            -y --no-install-recommends
+            -o DPkg::Lock::Timeout=180
+            -o Acquire::ForceIPv4=true
+            -o Acquire::Retries=1
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            -o Dpkg::Options::=--force-confdef
+            -o Dpkg::Options::=--force-confold
+          )
+
+          PKGS=(
+            bc bison build-essential ccache cpio curl device-tree-compiler flex
+            git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd
+            libncurses-dev
+          )
+
+          set_mirror() {
+            local uri=$1
+            printf 'Types: deb\nURIs: %s\nSuites: %s %s-updates %s-backports %s-security\nComponents: main restricted universe multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
+              "$uri" "$SUITE" "$SUITE" "$SUITE" "$SUITE" \
+              | sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null
+            printf '%s/\n' "$uri" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          }
+
+          sudo dpkg --configure -a 2>&1 | tee -a "$APT_LOG" >/dev/null || true
+
+          MIRRORS=(
+            "http://archive.ubuntu.com/ubuntu"
+            "https://mirrors.edge.kernel.org/ubuntu"
+            "http://mirrors.aliyun.com/ubuntu"
+            "http://azure.archive.ubuntu.com/ubuntu"
+          )
+
+          want=()
+          for m in "${MIRRORS[@]}"; do
+            want=()
+            for p in "${PKGS[@]}"; do
+              dpkg -s "$p" >/dev/null 2>&1 || want+=("$p")
+            done
+            if [ ${#want[@]} -eq 0 ]; then
+              echo "all build dependencies already present"
+              break
+            fi
+
+            host="${m#*://}"
+            host="${host%%/*}"
+            if ! getent hosts "$host" >/dev/null 2>&1; then
+              echo "::warning::DNS lookup failed for $host, skipping this mirror"
+              continue
+            fi
+
+            echo "=== mirror $m ; missing: ${want[*]} ==="
+            set_mirror "$m"
+
+            if timeout 180 sudo apt-get "${APT[@]}" update 2>&1 | tee -a "$APT_LOG" >/dev/null; then
+              echo "apt-get update ok via $m"
+              timeout 600 sudo apt-get "${APT[@]}" install "${want[@]}" 2>&1 | tee -a "$APT_LOG" >/dev/null || true
+            else
+              echo "::warning::apt-get update failed via $m"
             fi
           done
-          echo "packages to install:$missing"
-          if [ -n "$missing" ]; then
-            sudo apt-get install -y --no-install-recommends \
-                             -o Dpkg::Options::="--force-confdef" \
-                             -o Dpkg::Options::="--force-confold" $missing
+
+          still=()
+          for p in "${PKGS[@]}"; do
+            dpkg -s "$p" >/dev/null 2>&1 || still+=("$p")
+          done
+          echo "apt packages still missing: ${still[*]:-none}"
+          if [ ${#still[@]} -gt 0 ]; then
+            # Surfaced as an annotation on purpose: the job log needs auth to
+            # download, annotations can be read from the public API.
+            echo "::warning::apt packages still missing, continuing with what the image has: ${still[*]}"
           fi
 
-          for p in $PKGS; do
-            dpkg -s "$p" >/dev/null 2>&1 || { echo "::error::package '$p' is not installed"; exit 1; }
+          # What actually matters for the kernel build.
+          NO_TOOLS=()
+          for t in make gcc bison flex bc cpio python3 perl tar gzip git; do
+            command -v "$t" >/dev/null 2>&1 || NO_TOOLS+=("$t")
           done
+          echo "host tools still missing: ${NO_TOOLS[*]:-none}"
+
+          if [ ${#NO_TOOLS[@]} -gt 0 ]; then
+            echo "::error::host tools required by the kernel build are unavailable: ${NO_TOOLS[*]}"
+            tail -n 40 "$APT_LOG" | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::APT| ${line}"
+            done
+            exit 1
+          fi
+
+          # ccache is only a speed-up; drop the ccache step instead of failing.
+          if ! command -v ccache >/dev/null 2>&1; then
+            echo "::warning::ccache unavailable, disabling the ccache step"
+            echo "ENABLE_CCACHE=false" >> "$GITHUB_ENV"
+          fi
+
+          # libssl-dev is only pulled in by scripts/sign-file. Without it the
+          # kernel still builds and boots, it just cannot sign modules itself.
+          if ! dpkg -s libssl-dev >/dev/null 2>&1; then
+            echo "::warning::libssl-dev unavailable, building with CONFIG_MODULE_SIG=n"
+            echo "EXTRA_DEFCONFIG=${EXTRA_DEFCONFIG:-} CONFIG_MODULE_SIG=n" >> "$GITHUB_ENV"
+          fi
+
           mkdir -p "$WORKSPACE"
 
       - name: Set up toolchain
