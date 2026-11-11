@@ -109,10 +109,13 @@ make_args() {
 dump_make_log() {
 	local log=$1
 	[ -s "$log" ] || return 0
-	info "last 40 lines of ${log}:"
-	tail -n 40 "$log" | while IFS= read -r line; do
-		[ -n "$line" ] && echo "::error::MAKE| ${line}"
-	done
+	info "last 80 lines of ${log}:"
+	# One annotation, not one per line: GitHub keeps only the first 10
+	# annotations of a step, so a 40-line dump would hide the real error at the
+	# bottom. %0A is the workflow-command escape for a newline.
+	local msg
+	msg=$(tail -n 80 "$log" | tr -d '\r' | awk '{ gsub(/%/,"%25"); printf "%s%%0A", $0 }')
+	[ -n "$msg" ] && echo "::error::make output tail:%0A${msg}"
 }
 
 build_kernel() {
