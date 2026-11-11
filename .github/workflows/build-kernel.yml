@@ -29,7 +29,7 @@ on:
           - rsuntk
           - backslashxx
       ksu_ref:
-        description: "KernelSU branch/tag/commit (blank = best default for your kernel)"
+        description: "KernelSU branch/tag/commit for the selected variant (blank = its default; 'builtin' is sukisu-ultra only)"
         required: false
         default: ""
         type: string

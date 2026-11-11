@@ -72,6 +72,24 @@ ksu_field() { ksu_registry "$1" | cut -d'|' -f"$2"; }
 # build is not silently tracking a moving branch.
 ksu_default_is_branch() { [ "$1" = "resukisu" ]; }
 
+# ksu_ref_owner REF -- which variant's registry entry mentions REF?
+#
+# Mixing up variants is the usual reason a ref "does not exist": the dispatch
+# form remembers the last value typed into ksu_ref, so a build switched from
+# SukiSU-Ultra to ReSukiSU keeps asking for SukiSU's 'builtin' branch, which
+# ReSukiSU has never had. Printing the owner turns a bare branch list into a
+# diagnosis.
+ksu_ref_owner() {
+	local want=$1 v mref lref srefs owned
+	for v in kernelsu kernelsu-next sukisu-ultra resukisu rsuntk backslashxx; do
+		IFS='|' read -r _ _ _ mref lref srefs _ <<<"$(ksu_registry "$v")"
+		for owned in $mref $lref $srefs; do
+			[ "$owned" = "$want" ] && { printf '%s' "$v"; return 0; }
+		done
+	done
+	return 1
+}
+
 # ---------------------------------------------------------------- install ---
 
 ksu_install() {
@@ -100,12 +118,28 @@ ksu_install() {
 	# Validate before handing the ref to setup.sh, which would swallow a typo.
 	if [ -n "$ref" ]; then
 		info "validating ref '${ref}' exists in ${repo}"
-		ref_exists "$repo" "$ref" \
-			|| die "ref '${ref}' does not exist in ${repo}.
-       setup.sh would silently fall back to the default branch and you would
-       get a kernel without the feature you asked for.
-       Available branches: $(git ls-remote --heads "$repo" 2>/dev/null | awk '{print $2}' | sed 's@refs/heads/@@' | grep -v dependabot | tr '\n' ' ')"
-		ok "ref '${ref}' exists"
+		if ref_exists "$repo" "$ref"; then
+			ok "ref '${ref}' exists"
+		else
+			local avail hint owner
+			avail=$(git ls-remote --heads "$repo" 2>/dev/null | awk '{print $2}' \
+				| sed 's@refs/heads/@@' | grep -v dependabot | tr '\n' ' ')
+			hint=""
+			if owner=$(ksu_ref_owner "$ref"); then
+				hint="
+      hint: '${ref}' is a ref of ${owner}, not ${name}. The workflow input
+      'ksu_ref' most likely carried over from a run of the other variant."
+			fi
+			if [ -n "$legacy_ref" ]; then
+				hint="${hint}
+      hint: leave KSU_REF empty to use this variant's own default
+      (pre-5.10: '${legacy_ref}', 5.10+: '${modern_ref:-latest tag}')."
+			fi
+			die "ref '${ref}' does not exist in ${repo}.
+      setup.sh would silently fall back to the default branch and you would
+      get a kernel without the feature you asked for.
+      Available branches: ${avail}${hint}"
+		fi
 	else
 		warn "no ref pinned; setup.sh will pick the latest tag. Set KSU_REF for reproducible builds."
 	fi
