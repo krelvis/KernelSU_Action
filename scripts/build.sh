@@ -155,9 +155,13 @@ build_kernel() {
 	make -j"$(nproc --all)" CC=clang $args "${KERNEL_CONFIG}" 2>&1 | tee -a "$build_log" \
 		|| { dump_make_log "$build_log"; die "defconfig generation failed"; }
 
-	info "make ${args}"
+	# Build the image target explicitly. On Qualcomm trees the default goal is
+	# "Image dtbs", and dtbs pulls in arch/arm64/boot/dts/vendor, which needs the
+	# camera/video submodules this dump does not ship. AnyKernel3 only replaces
+	# the kernel image, so the devicetrees are dead weight for this package.
+	info "make ${args} ${KERNEL_IMAGE_NAME}"
 	# shellcheck disable=SC2086
-	make -j"$(nproc --all)" CC="$cc" $args 2>&1 | tee -a "$build_log" \
+	make -j"$(nproc --all)" CC="$cc" $args "${KERNEL_IMAGE_NAME}" 2>&1 | tee -a "$build_log" \
 		|| { dump_make_log "$build_log"; die "kernel build failed"; }
 
 	endgroup
