@@ -98,7 +98,10 @@ permissions:
 jobs:
   build:
     name: Build ${{ inputs.config }}
-    runs-on: ubuntu-latest
+    # Pinned on purpose: `ubuntu-latest` is mid-migration to Ubuntu 26, and a
+    # 4.19 kernel must be built against a toolchain/system combination that does
+    # not change under us between runs.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     outputs:
       device: ${{ steps.meta.outputs.device }}
@@ -113,6 +116,7 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
+      DEBIAN_FRONTEND: "noninteractive"
 
       # workflow inputs -> IN_* overrides consumed by scripts/config.sh
       IN_KSU_VARIANT: ${{ inputs.ksu_variant }}
@@ -130,17 +134,30 @@ jobs:
       - name: Resolve configuration
         run: bash scripts/config.sh
 
+      # Do NOT use jlumbroso/free-disk-space here. Its `large-packages` option
+      # runs `apt-get remove -y <hardcoded list> --fix-missing`; on the newer
+      # runner images several of those packages no longer exist, the removal
+      # exits 100 and leaves dpkg half-configured, which then makes the very
+      # next apt-get call fail with the same exit code. Deleting directories is
+      # equally effective and cannot corrupt the package database.
       - name: Free up disk space
         if: env.REMOVE_UNUSED_PACKAGES == 'true'
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: false
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android/sdk \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/node_modules \
+            /opt/az \
+            /usr/share/swift || true
+          sudo apt-get clean || true
+          docker image prune -af || true
+          sudo rm -rf /var/lib/docker/aufs /var/lib/docker/overlay2/* || true
+          df -h /
 
       - name: Add swap space
         run: |
@@ -154,15 +171,34 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          # Kept deliberately lean. The historical list here was copied from the
-          # full AOSP platform build docs and pulled in ~40 packages a kernel
-          # build never touches, several of which no longer exist on current
-          # Ubuntu (python2, lib32ncurses5-dev, ...).
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache cpio curl device-tree-compiler flex \
-            git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd \
-            libncurses-dev
+          set -x
+          # Recover from any pre-existing broken dpkg state instead of dying on it.
+          sudo dpkg --configure -a || true
+          sudo apt-get -y -o Dpkg::Options::="--force-confdef" \
+                          -o Dpkg::Options::="--force-confold" -f install || true
+          sudo apt-get update
+
+          # Installed one by one and skipped when present, so a single bad
+          # package name reports itself instead of producing a bare exit code 100.
+          PKGS="bc bison build-essential ccache cpio curl device-tree-compiler flex
+                git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd
+                libncurses-dev"
+          missing=""
+          for p in $PKGS; do
+            if ! dpkg -s "$p" >/dev/null 2>&1; then
+              missing="$missing $p"
+            fi
+          done
+          echo "packages to install:$missing"
+          if [ -n "$missing" ]; then
+            sudo apt-get install -y --no-install-recommends \
+                             -o Dpkg::Options::="--force-confdef" \
+                             -o Dpkg::Options::="--force-confold" $missing
+          fi
+
+          for p in $PKGS; do
+            dpkg -s "$p" >/dev/null 2>&1 || { echo "::error::package '$p' is not installed"; exit 1; }
+          done
           mkdir -p "$WORKSPACE"
 
       - name: Set up toolchain
@@ -237,7 +273,7 @@ jobs:
     name: Publish release
     needs: build
     if: inputs.publish_release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
