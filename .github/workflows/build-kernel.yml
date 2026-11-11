@@ -297,6 +297,52 @@ jobs:
       - name: Fetch kernel source
         run: bash scripts/source.sh
 
+      - name: Fetch OPLUS vendor tree
+        run: |
+          set -euo pipefail
+
+          # The kernel tree ships broken symlinks for OPLUS pieces:
+          #   kernel/sched_assist              -> ../../../vendor/oplus/kernel/oplus_performance/sched_assist/
+          #   include/linux/sched_assist       -> (same vendor tree)
+          # The kernel sits at $WORKSPACE/android-kernel, so three levels up is
+          # $GITHUB_WORKSPACE -- the content is expected at $GITHUB_WORKSPACE/vendor.
+          # OnePlus publishes it in the companion repo below, and without it
+          # `make vendor/kona-perf_defconfig` dies with
+          #   init/Kconfig:772: can't open file "kernel/sched_assist/Kconfig"
+          VENDOR_REPO="https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8250.git"
+          DEST="${GITHUB_WORKSPACE}/vendor"
+          MARKER="${DEST}/oplus/kernel/oplus_performance/sched_assist/Kconfig"
+
+          if [ -f "$MARKER" ]; then
+            echo "OPLUS vendor tree already present"
+            exit 0
+          fi
+
+          if [ -n "${KERNEL_DIR:-}" ] && [ -L "${KERNEL_DIR}/kernel/sched_assist" ]; then
+            echo "sched_assist resolves to: $(readlink -f "${KERNEL_DIR}/kernel/sched_assist" || true)"
+          fi
+
+          rm -rf "${RUNNER_TEMP}/oplus-src"
+          # Sparse + blobless: only vendor/ is needed, and the companion repo
+          # also carries kernel modules and devicetrees we do not want.
+          if ! git clone --depth=1 --filter=blob:none --sparse \
+                 -b "${KERNEL_SOURCE_BRANCH}" "$VENDOR_REPO" "${RUNNER_TEMP}/oplus-src"; then
+            echo "::warning::branch ${KERNEL_SOURCE_BRANCH} not found in the vendor repo, retrying with the default branch"
+            git clone --depth=1 --filter=blob:none --sparse "$VENDOR_REPO" "${RUNNER_TEMP}/oplus-src"
+          fi
+
+          git -C "${RUNNER_TEMP}/oplus-src" sparse-checkout set vendor
+          mkdir -p "$DEST"
+          cp -a "${RUNNER_TEMP}/oplus-src/vendor/." "$DEST/"
+
+          if [ ! -f "$MARKER" ]; then
+            echo "::error::sched_assist/Kconfig still missing after fetching the vendor tree"
+            echo "::error::looked for: $MARKER"
+            echo "::error::vendor tree contents: $(find "${RUNNER_TEMP}/oplus-src/vendor" -mindepth 1 -maxdepth 3 -type d 2>&1 | head -20 | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "OPLUS vendor tree ready"
+
       - name: Install KernelSU
         if: env.KSU_VARIANT != 'none'
         run: bash scripts/kernelsu.sh
