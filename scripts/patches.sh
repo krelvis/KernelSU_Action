@@ -309,16 +309,25 @@ hooks_patch_apply() {
 	group "Applying manual syscall hooks (kernel ${kver})"
 
 	# ReSukiSU publishes scope-minimised hook patches keyed by kernel version.
+	#
+	# This branch must NOT fall through to the bundled legacy script: that
+	# script injects the KernelSU 0.9.x symbols (ksu_handle_execve and friends),
+	# which ReSukiSU's tools/manual_hook_check.mk rejects outright with
+	# "ksu_handle_execve is deprecated". Failing here with a clear message beats
+	# a tree that is half-patched with the wrong hook API.
 	if [ "$variant" = "resukisu" ]; then
 		local dir="${WORKSPACE}/ReSukiSU_Patches"
 		[ -d "$dir" ] || retry 3 git clone -q --depth=1 \
 			https://github.com/ReSukiSU/ReSukiSU_Patches.git "$dir" || true
 		local p="${dir}/scope-minimized/kernel-${kver}.patch"
-		if [ -f "$p" ]; then
-			( cd "$KERNEL_DIR" && apply_patch "$p" 1 ) && { endgroup; return 0; }
-		else
-			info "ReSukiSU ships no scope-minimized patch for kernel ${kver}"
-		fi
+		[ -f "$p" ] || die "ReSukiSU ships no scope-minimized hook patch for kernel ${kver}.
+      Available: $(ls "${dir}/scope-minimized" 2>/dev/null | tr '\n' ' ')"
+		( cd "$KERNEL_DIR" && apply_patch "$p" 1 ) \
+			|| die "the ReSukiSU hook patch for kernel ${kver} did not apply.
+      The vendor tree has diverged from the upstream file it was generated
+      against; patch ${p} by hand or pick a fork that needs no hooks."
+		endgroup
+		return 0
 	fi
 
 	# SukiSU's patch repo carries per-version hook patches too.

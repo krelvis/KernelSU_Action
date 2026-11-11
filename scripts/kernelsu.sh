@@ -54,8 +54,13 @@ ksu_registry() {
 		# non-GKI/source-integrated tree and is the only one with SUSFS Kconfig.
 		echo "https://github.com/SukiSU-Ultra/SukiSU-Ultra|main|KernelSU|main|builtin|builtin|SukiSU-Ultra" ;;
 	resukisu)
-		# Re-fork of SukiSU-Ultra aimed at legacy/non-GKI kernels.
-		echo "https://github.com/ReSukiSU/ReSukiSU|main|KernelSU|main|main|-|ReSukiSU" ;;
+		# Re-fork of SukiSU-Ultra aimed at legacy/non-GKI kernels. The project
+		# renamed itself to BakaSU; ReSukiSU/ReSukiSU only still resolves via a
+		# GitHub redirect, and its setup.sh clones Baka-SU/BakaSU regardless.
+		# Validate the ref against the repo that is actually cloned, otherwise a
+		# branch name taken from the redirect target looks valid while the
+		# checkout lands somewhere else.
+		echo "https://github.com/Baka-SU/BakaSU|main|KernelSU|main|main|-|ReSukiSU" ;;
 	rsuntk)
 		echo "https://github.com/rsuntk/KernelSU|main|KernelSU|main|main|susfs-rksu-master|RKSU (rsuntk)" ;;
 	backslashxx)
@@ -90,6 +95,13 @@ ksu_ref_owner() {
 	return 1
 }
 
+# ksu_default_ref VARIANT KVER -- the ref the variant itself would pick.
+ksu_default_ref() {
+	local variant=$1 kver=$2 mref lref
+	IFS='|' read -r _ _ _ mref lref _ _ <<<"$(ksu_registry "$variant")"
+	if ver_ge "$kver" "5.10"; then printf '%s' "$mref"; else printf '%s' "$lref"; fi
+}
+
 # ---------------------------------------------------------------- install ---
 
 ksu_install() {
@@ -107,38 +119,43 @@ ksu_install() {
 	local kver ref=$requested_ref
 	kver=$(kernel_version "$KERNEL_DIR" || echo "0.0")
 	if [ -z "$ref" ]; then
-		if ver_ge "$kver" "5.10"; then
-			ref=$modern_ref
-		else
-			ref=$legacy_ref
-			[ -n "$ref" ] && info "kernel ${kver} is pre-GKI; defaulting to ref '${ref}'"
+		ref=$(ksu_default_ref "$variant" "$kver")
+		if [ -n "$ref" ]; then
+			if ver_ge "$kver" "5.10"; then
+				info "kernel ${kver}; defaulting to ref '${ref}'"
+			else
+				info "kernel ${kver} is pre-GKI; defaulting to ref '${ref}'"
+			fi
 		fi
 	fi
 
 	# Validate before handing the ref to setup.sh, which would swallow a typo.
+	#
+	# A ref that exists in a *different* variant is not a typo, it is a stale
+	# workflow input -- the dispatch form keeps ksu_ref between runs, so a build
+	# switched from SukiSU-Ultra to ReSukiSU keeps asking for SukiSU's 'builtin'.
+	# Falling back to this variant's own default (loudly) keeps an otherwise
+	# correct build from dying on a leftover string. A ref nobody owns is still
+	# fatal: that is a real typo and setup.sh would silently ignore it.
 	if [ -n "$ref" ]; then
 		info "validating ref '${ref}' exists in ${repo}"
+		local owner
 		if ref_exists "$repo" "$ref"; then
 			ok "ref '${ref}' exists"
+		elif owner=$(ksu_ref_owner "$ref"); then
+			warn "KSU_REF='${ref}' is a ref of ${owner}, not ${name}; ignoring the workflow input."
+			ref=$(ksu_default_ref "$variant" "$kver")
+			warn "using ${name}'s own default for kernel ${kver}: '${ref:-latest tag}'"
 		else
-			local avail hint owner
+			local avail
 			avail=$(git ls-remote --heads "$repo" 2>/dev/null | awk '{print $2}' \
 				| sed 's@refs/heads/@@' | grep -v dependabot | tr '\n' ' ')
-			hint=""
-			if owner=$(ksu_ref_owner "$ref"); then
-				hint="
-      hint: '${ref}' is a ref of ${owner}, not ${name}. The workflow input
-      'ksu_ref' most likely carried over from a run of the other variant."
-			fi
-			if [ -n "$legacy_ref" ]; then
-				hint="${hint}
-      hint: leave KSU_REF empty to use this variant's own default
-      (pre-5.10: '${legacy_ref}', 5.10+: '${modern_ref:-latest tag}')."
-			fi
 			die "ref '${ref}' does not exist in ${repo}.
       setup.sh would silently fall back to the default branch and you would
       get a kernel without the feature you asked for.
-      Available branches: ${avail}${hint}"
+      Available branches: ${avail}
+      hint: leave KSU_REF empty to use this variant's own default
+      (pre-5.10: '${legacy_ref}', 5.10+: '${modern_ref:-latest tag}')."
 		fi
 	else
 		warn "no ref pinned; setup.sh will pick the latest tag. Set KSU_REF for reproducible builds."
@@ -282,9 +299,21 @@ ksu_hook_configs() {
 				# ReSukiSU's non-GKI static export check requires the complete
 				# kallsyms table unless every internal SELinux symbol is exported
 				# manually by the vendor tree.
+				#
+				# The three AUTO_* options are not optional in practice: the
+				# scope-minimized hook patch only patches execveat/faccessat/
+				# stat/reboot, while tools/manual_hook_check.mk hard-fails the
+				# build for every hook it cannot find. These options supply the
+				# remaining setresuid / sys_read / input hooks through LSM and
+				# input_handler instead of more source patches. They are
+				# unusable on 6.8+, so the fork only defaults them on for the
+				# legacy kernels this variant targets.
 				kconf_set_many "$defconfig" \
 					CONFIG_KSU_MANUAL_HOOK=y CONFIG_DEBUG_KERNEL=y \
-					CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y ;;
+					CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y \
+					CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y \
+					CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y \
+					CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y ;;
 			*) : ;;  # tiann/KernelSU 0.9.x infers manual hooks from the source patch
 		esac
 		;;
