@@ -343,6 +343,32 @@ jobs:
           fi
           echo "OPLUS vendor tree ready"
 
+      - name: Prune unfetchable submodule dirs
+        run: |
+          set -euo pipefail
+
+          # Every submodule entry (gitlink, mode 160000) in this dump has no
+          # .gitmodules counterpart, so a plain clone leaves an EMPTY directory
+          # and cannot restore the content. techpack/Kbuild turns every
+          # directory under techpack/ into a build target, which is how
+          #   No rule to make target '../techpack/camera/Makefile'
+          # killed the build. Git never tracks empty directories, so an empty
+          # gitlink directory is only ever a placeholder and safe to drop.
+          # camera/display/video ship as prebuilt modules in /vendor/lib/modules.
+          cd "$KERNEL_DIR"
+          pruned=0
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ -d "$path" ] || continue
+            if [ -n "$(find "$path" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              continue
+            fi
+            rmdir "$path"
+            echo "pruned empty submodule dir: $path"
+            pruned=$((pruned + 1))
+          done < <(git ls-files -s | awk '$1 == "160000"' | cut -f2)
+          echo "pruned ${pruned} empty submodule dir(s)"
+
       - name: Install KernelSU
         if: env.KSU_VARIANT != 'none'
         run: bash scripts/kernelsu.sh
