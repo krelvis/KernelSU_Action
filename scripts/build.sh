@@ -103,6 +103,18 @@ make_args() {
 	fi
 }
 
+# A failing make only surfaces as a one-line die() message, and the job log
+# needs authentication to download. Re-emit the tail as annotations so the
+# real compiler error is readable straight from the public check-runs API.
+dump_make_log() {
+	local log=$1
+	[ -s "$log" ] || return 0
+	info "last 40 lines of ${log}:"
+	tail -n 40 "$log" | while IFS= read -r line; do
+		[ -n "$line" ] && echo "::error::MAKE| ${line}"
+	done
+}
+
 build_kernel() {
 	group "Building kernel"
 	export PATH="${CLANG_PATH:-}:${PATH}"
@@ -132,15 +144,18 @@ build_kernel() {
 	fi
 
 	cd "$KERNEL_DIR"
+	local build_log="${WORKSPACE}/build.log"
+	: > "$build_log"
+
 	info "make ${args} ${KERNEL_CONFIG}"
 	# shellcheck disable=SC2086
-	make -j"$(nproc --all)" CC=clang $args "${KERNEL_CONFIG}" \
-		|| die "defconfig generation failed"
+	make -j"$(nproc --all)" CC=clang $args "${KERNEL_CONFIG}" 2>&1 | tee -a "$build_log" \
+		|| { dump_make_log "$build_log"; die "defconfig generation failed"; }
 
 	info "make ${args}"
 	# shellcheck disable=SC2086
-	make -j"$(nproc --all)" CC="$cc" $args \
-		|| die "kernel build failed"
+	make -j"$(nproc --all)" CC="$cc" $args 2>&1 | tee -a "$build_log" \
+		|| { dump_make_log "$build_log"; die "kernel build failed"; }
 
 	endgroup
 }
