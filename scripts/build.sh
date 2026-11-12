@@ -89,6 +89,45 @@ prepare_defconfig() {
 	endgroup
 }
 
+# --------------------------------------------------------------- warnings ---
+
+# 4.19 vendor trees hard-code -Werror in per-directory flags
+# (techpack/display/oplus, drivers/input/touchscreen/oplus_touchscreen, ...).
+# Those are expanded inside c_flags *after* KBUILD_CFLAGS, so the
+# KCFLAGS=-Wno-error passed to make cannot neutralise them, and clang 14 then
+# rejects decades-old vendor code GCC compiled happily:
+#   error: this old-style function definition is not preceded by a prototype
+#   [-Werror,-Wstrict-prototypes]
+# Rewrite every occurrence in the tree and append the flag to c_flags as a
+# belt-and-braces measure. Warnings stay visible; only their promotion to
+# errors is removed.
+neutralize_werror() {
+	is_true "${DISABLE_CC_WERROR:-false}" || return 0
+	group "Neutralising -Werror"
+
+	local f count=0
+	while IFS= read -r -d '' f; do
+		grep -q -- '-Werror' "$f" 2>/dev/null || continue
+		sed -i 's/-Werror/-Wno-error/g' "$f"
+		count=$((count + 1))
+	done < <(find "$KERNEL_DIR" -path "${KERNEL_DIR}/out" -prune -o \
+		\( -name 'Makefile' -o -name 'Makefile.*' -o -name 'Kbuild' -o -name '*.mk' \) \
+		-type f -print0)
+
+	if [ "$count" -eq 0 ]; then
+		info "no -Werror flags found in the tree"
+	else
+		ok "neutralised -Werror in ${count} makefile(s)"
+	fi
+
+	local lib="${KERNEL_DIR}/scripts/Makefile.lib"
+	if [ -f "$lib" ] && ! grep -q 'KernelSU_Action: keep vendor -Werror' "$lib"; then
+		printf '\n# KernelSU_Action: keep vendor -Werror flags from breaking clang builds\nc_flags += -Wno-error\n' >>"$lib"
+		ok "appended -Wno-error to c_flags in scripts/Makefile.lib"
+	fi
+	endgroup
+}
+
 # ----------------------------------------------------------------- build ---
 
 make_args() {
@@ -140,6 +179,8 @@ build_kernel() {
 
 	local cc="clang" args
 	args=$(make_args)
+
+	neutralize_werror
 
 	# CONFIG_CC_WERROR only exists on 5.15+; this 4.19 vendor tree hard-codes
 	# -Werror in KBUILD_CFLAGS instead, so kconf_disable above cannot reach it
