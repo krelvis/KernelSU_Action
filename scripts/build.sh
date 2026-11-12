@@ -148,12 +148,24 @@ make_args() {
 dump_make_log() {
 	local log=$1
 	[ -s "$log" ] || return 0
-	info "last 80 lines of ${log}:"
 	# One annotation, not one per line: GitHub keeps only the first 10
 	# annotations of a step, so a 40-line dump would hide the real error at the
 	# bottom. %0A is the workflow-command escape for a newline.
+	#
+	# clang 14 on a GCC-era tree emits hundreds of "unknown warning option"
+	# warnings, and a plain tail of the log is nothing but that noise -- the
+	# actual diagnostic scrolls well past it. Prefer real error lines, and only
+	# fall back to the tail when the build failed for some other reason.
+	local lines
+	lines=$(grep -aE 'error:|Error [0-9]|\*\*\* |undefined symbol|No rule to make|fatal error|ld\.lld: error' "$log" 2>/dev/null | tail -n 40)
+	if [ -z "$lines" ]; then
+		info "last 80 lines of ${log}:"
+		lines=$(tail -n 80 "$log")
+	else
+		info "error lines from ${log}:"
+	fi
 	local msg
-	msg=$(tail -n 80 "$log" | tr -d '\r' | awk '{ gsub(/%/,"%25"); printf "%s%%0A", $0 }')
+	msg=$(printf '%s\n' "$lines" | tr -d '\r' | awk '{ gsub(/%/,"%25"); printf "%s%%0A", $0 }')
 	[ -n "$msg" ] && echo "::error::make output tail:%0A${msg}"
 }
 
