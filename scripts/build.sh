@@ -128,6 +128,23 @@ neutralize_werror() {
 	endgroup
 }
 
+# lld rejects absolute relocations that a CONFIG_RELOCATABLE arm64 link emits:
+#   ld.lld: error: relocation R_AARCH64_ABS32 cannot be used against symbol
+#   '__crc_gsi_write_channel_scratch'; recompile with -fPIC
+# The __crc_* symbols come from CONFIG_MODVERSIONS, and lld treats the
+# -shared/-Bsymbolic vmlinux link as PIC. Newer arm64 Makefiles pass -z notext
+# for exactly this; 4.19 predates the workaround, so add it. GNU ld also
+# accepts the flag, so this is safe if LD is not lld.
+ensure_lld_notext() {
+	local mk="${KERNEL_DIR}/arch/${ARCH}/Makefile"
+	[ -f "$mk" ] || return 0
+	if grep -q 'KernelSU_Action: allow lld text relocations' "$mk"; then
+		return 0
+	fi
+	printf '\n# KernelSU_Action: allow lld text relocations\nLDFLAGS_vmlinux += -z notext\n' >>"$mk"
+	ok "appended '-z notext' to LDFLAGS_vmlinux"
+}
+
 # ----------------------------------------------------------------- build ---
 
 make_args() {
@@ -193,6 +210,7 @@ build_kernel() {
 	args=$(make_args)
 
 	neutralize_werror
+	ensure_lld_notext
 
 	# CONFIG_CC_WERROR only exists on 5.15+; this 4.19 vendor tree hard-codes
 	# -Werror in KBUILD_CFLAGS instead, so kconf_disable above cannot reach it
