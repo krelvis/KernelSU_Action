@@ -192,6 +192,26 @@ build_kernel() {
 	if is_true "${DISABLE_CC_WERROR:-false}"; then
 		args="$args KCFLAGS=-Wno-error"
 	fi
+
+	# OPLUS gates whole objects on make variables that its Android build exports
+	# from oplus_native_features.mk. OplusKernelEnvConfig.mk only turns the same
+	# names into -D macros (its ALLOWED_MCROS list is unconditional), so a bare
+	# `make` compiles every caller but skips the callee objects, and vmlinux
+	# then fails to link:
+	#   ld.lld: error: undefined symbol: ufsf_init
+	#   ld.lld: error: undefined symbol: create_signal_quality_proc
+	#   ld.lld: error: undefined symbol: is_reclaim_should_cancel
+	# Forward every switch in that file, which is exactly what the Android build
+	# passes on the make command line. OPLUS_NATIVE_FEATURE_SET is a space
+	# separated name list, not a switch, so it is dropped.
+	if [ -f "${KERNEL_DIR}/oplus_native_features.mk" ]; then
+		local oplus_vars
+		oplus_vars=$(sed -nE '/^OPLUS_NATIVE_FEATURE_SET=/d
+			s/^(OPLUS_[A-Za-z0-9_]+)=([^[:space:]]+)$/\1=\2/p' \
+			"${KERNEL_DIR}/oplus_native_features.mk" | tr '\n' ' ')
+		args="$args ${oplus_vars}"
+		info "exporting $(printf '%s' "$oplus_vars" | wc -w) OPLUS switch(es) to make"
+	fi
 	if is_true "${ENABLE_CCACHE:-true}" && command -v ccache >/dev/null; then
 		cc="ccache clang"
 		export CCACHE_DIR="${CCACHE_DIR:-${WORKSPACE}/.ccache}"
