@@ -140,6 +140,17 @@ build_kernel() {
 
 	local cc="clang" args
 	args=$(make_args)
+
+	# CONFIG_CC_WERROR only exists on 5.15+; this 4.19 vendor tree hard-codes
+	# -Werror in KBUILD_CFLAGS instead, so kconf_disable above cannot reach it
+	# and clang 14 turns warnings GCC never emitted into hard errors
+	# (drivers/vservices/session.c: unused-but-set variable). KCFLAGS is
+	# expanded after KBUILD_CFLAGS, so -Wno-error neutralises it. This replaces
+	# the KCFLAGS coming from EXTRA_CMDS, which only carried a narrower
+	# -Wno-error=strict-prototypes.
+	if is_true "${DISABLE_CC_WERROR:-false}"; then
+		args="$args KCFLAGS=-Wno-error"
+	fi
 	if is_true "${ENABLE_CCACHE:-true}" && command -v ccache >/dev/null; then
 		cc="ccache clang"
 		export CCACHE_DIR="${CCACHE_DIR:-${WORKSPACE}/.ccache}"

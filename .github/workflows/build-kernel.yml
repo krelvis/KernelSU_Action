@@ -360,9 +360,25 @@ jobs:
             git clone --depth=1 --filter=blob:none --sparse "$VENDOR_REPO" "${RUNNER_TEMP}/oplus-src"
           fi
 
-          git -C "${RUNNER_TEMP}/oplus-src" sparse-checkout set vendor
+          git -C "${RUNNER_TEMP}/oplus-src" sparse-checkout set vendor kernel/msm-4.19/techpack/display
           mkdir -p "$DEST"
           cp -a "${RUNNER_TEMP}/oplus-src/vendor/." "$DEST/"
+
+          # drivers/soc/qcom/Makefile adds
+          #   ccflags-y += -I$(srctree)/techpack/display/msm -I.../msm/dsi ...
+          # because fsa4480-i2c.c does #include "dsi/dsi_display.h". The main
+          # kernel dump only ships techpack/display as an empty submodule
+          # placeholder (gitlink), so every build dies at
+          #   drivers/soc/qcom/fsa4480-i2c.c:12: fatal error: 'dsi/dsi_display.h' file not found
+          # The same companion repo carries the real source, one level deeper.
+          TECH_SRC="${RUNNER_TEMP}/oplus-src/kernel/msm-4.19/techpack/display"
+          if [ -d "$TECH_SRC" ]; then
+            mkdir -p "${KERNEL_TREE}/techpack/display"
+            cp -a "${TECH_SRC}/." "${KERNEL_TREE}/techpack/display/"
+            echo "techpack/display populated from the OPLUS repository"
+          else
+            echo "::warning::techpack/display missing in ${VENDOR_REPO}; fsa4480-i2c.c will fail to build"
+          fi
 
           if [ ! -f "$MARKER" ]; then
             echo "::error::sched_assist/Kconfig still missing after fetching the vendor tree"
