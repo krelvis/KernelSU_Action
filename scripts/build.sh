@@ -136,6 +136,14 @@ neutralize_werror() {
 # for exactly this; 4.19 predates the workaround, so add it. GNU ld also
 # accepts the flag, so this is safe if LD is not lld.
 ensure_lld_notext() {
+	# Only meaningful when the tree is really linking with lld. In practice the
+	# flag does not even help there (lld still refuses ABS32 against __crc_*),
+	# which is why config.env uses the AOSP GNU ld instead; keep the helper so a
+	# tree that forces LD=ld.lld at least gets the standard workaround.
+	case " ${EXTRA_CMDS:-} " in
+		*LD=ld.lld*) ;;
+		*) return 0 ;;
+	esac
 	local mk="${KERNEL_DIR}/arch/${ARCH}/Makefile"
 	[ -f "$mk" ] || return 0
 	if grep -q 'KernelSU_Action: allow lld text relocations' "$mk"; then
