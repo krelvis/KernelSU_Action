@@ -206,6 +206,29 @@ ksu_install() {
 	grep -q 'drivers/kernelsu/Kconfig' "${KERNEL_DIR}/drivers/Kconfig" \
 		|| die "drivers/Kconfig was not wired up for kernelsu"
 
+	# --- non-GKI compat fixes ----------------------------------------------
+	# SukiSU-Ultra's kernel_includes.h pulls in 5.10+-only headers
+	# unconditionally. None of them is referenced anywhere in the KSU tree
+	# (verified on the builtin branch), so a plain version guard is enough
+	# for pre-GKI kernels. Without this, 4.19 dies with
+	# "fatal error: 'linux/static_call.h' file not found".
+	local inc_h
+	inc_h="${dir}/kernel/kernel_includes.h"
+	if [ -f "$inc_h" ] && ! ver_ge "$kver" "5.10"; then
+		if grep -q '<linux/static_call\.h>' "$inc_h"; then
+			sed -i 's@^#include <linux/static_call\.h>$@#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>\n#endif@' "$inc_h"
+			warn "guarded <linux/static_call.h> for kernel ${kver} (header not present pre-5.3)"
+		fi
+		if grep -q '<linux/hex\.h>' "$inc_h"; then
+			sed -i 's@^#include <linux/hex\.h>$@#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)\n#include <linux/hex.h>\n#endif@' "$inc_h"
+			warn "guarded <linux/hex.h> for kernel ${kver} (header not present pre-5.13)"
+		fi
+		if grep -q '<uapi/linux/mount\.h>' "$inc_h"; then
+			sed -i 's@^#include <uapi/linux/mount\.h>$@#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)\n#include <uapi/linux/mount.h>\n#endif@' "$inc_h"
+			warn "guarded <uapi/linux/mount.h> for kernel ${kver} (uapi header not present pre-5.11)"
+		fi
+	fi
+
 	# Confirm we landed on the ref we asked for, catching the silent fallback.
 	local head_desc head_sha
 	head_sha=$(git -C "$ksu_dir" rev-parse --short HEAD)
