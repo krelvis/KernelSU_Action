@@ -72,11 +72,20 @@ susfs_apply() {
 	cp -v "${kp}/include/linux/"*.h   "${KERNEL_DIR}/include/linux/" 2>/dev/null || true
 
 	# 2. Patch the kernel itself.
-	local kernel_patch="${kp}/50_add_susfs_in_${branch}.patch"
-	[ -f "$kernel_patch" ] || {
-		# Fall back to whatever 50_* patch the branch actually ships.
-		kernel_patch=$(find "$kp" -maxdepth 1 -name '50_add_susfs_in_*.patch' | head -n1)
-	}
+	# A repo-local adapted patch (patches/susfs/50_add_susfs_in_<branch>_oplus_adapted.patch)
+	# takes precedence: non-GKI OPLUS/OnePlusOSS trees need hand-ported hunks
+	# (may_create signature, OPLUS namespace.c header block, fdinfo.c mask
+	# helper, sched.h without ANDROID_KABI_RESERVE slots).
+	local kernel_patch="${REPO_ROOT}/patches/susfs/50_add_susfs_in_${branch}_oplus_adapted.patch"
+	if [ -f "$kernel_patch" ]; then
+		info "using repo-local adapted SUSFS patch: patches/susfs/50_add_susfs_in_${branch}_oplus_adapted.patch"
+	else
+		kernel_patch="${kp}/50_add_susfs_in_${branch}.patch"
+		[ -f "$kernel_patch" ] || {
+			# Fall back to whatever 50_* patch the branch actually ships.
+			kernel_patch=$(find "$kp" -maxdepth 1 -name '50_add_susfs_in_*.patch' | head -n1)
+		}
+	fi
 	[ -n "$kernel_patch" ] && [ -f "$kernel_patch" ] \
 		|| die "no 50_add_susfs_in_*.patch found in ${kp}"
 
