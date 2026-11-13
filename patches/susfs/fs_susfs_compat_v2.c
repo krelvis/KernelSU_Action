@@ -26,6 +26,11 @@ static void ksu155_extra_work_noop(struct work_struct *work)
 	(void)work;
 }
 
+/* The OnePlusOSS tree lacks mainline's DEFINE_WORK; DECLARE_WORK is identical. */
+#ifndef DEFINE_WORK
+#define DEFINE_WORK(n, f) DECLARE_WORK(n, f)
+#endif
+
 DEFINE_WORK(susfs_extra_works, ksu155_extra_work_noop);
 
 static void ksu155_write_err(void __user *ui, size_t err_offset, int err)
