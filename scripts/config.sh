@@ -65,6 +65,7 @@ declare -A DEFAULTS=(
 	[ENABLE_HIDE_STUFF]="false"
 	[ENABLE_KPM]="false"
 	[ENABLE_MODVERSIONS_TOLERANCE]="false"
+	[ENABLE_CAMX_KMD]="false"
 
 	# Kconfig tweaks
 	[ADD_KPROBES_CONFIG]="false"

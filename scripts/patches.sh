@@ -318,6 +318,50 @@ s/bad_version:\n\tpr_warn\("%s: disagrees about version of symbol %s\\n",\n\t   
 	endgroup
 }
 
+# ================================================================= camx KMD
+#
+# OnePlus's Android 12+ OSS releases turn techpack/camera into an unfetchable
+# submodule (no .gitmodules entry) and the workflow prunes the empty
+# directory, so the camera kernel-mode driver is never compiled in. The
+# vendor HAL then aborts in CamX::HwEnvironment::GetInstance() every 5
+# seconds because /sys/class/video4linux has no camx nodes, and the device
+# never reaches sys.boot_completed.
+#
+# The Android 11 branch of the same repository (oneplus/SM8250_R_11.0_9R)
+# still ships the full kona camera KMD source. techpack/camera/Makefile is
+# self-contained: with CONFIG_ARCH_KONA=y it includes config/konacamera.conf
+# which forces CONFIG_SPECTRA_CAMERA=y, so dropping the directory into the
+# tree is enough -- no defconfig change, no Kconfig hook.
+camx_kmd_apply() {
+	group "Restoring techpack/camera KMD"
+	local camdir="${KERNEL_DIR}/techpack/camera"
+
+	if [ -f "${camdir}/Makefile" ]; then
+		info "techpack/camera already present; nothing to do"
+		endgroup; return 0
+	fi
+
+	local src="${WORKSPACE}/camera-kmd-src"
+	rm -rf "$src"
+	retry 3 git clone -q --depth=1 --filter=blob:none --sparse \
+		-b oneplus/SM8250_R_11.0_9R \
+		https://github.com/OnePlusOSS/android_kernel_oneplus_sm8250.git "$src" \
+		|| die "failed to clone the Android 11 kernel tree (camera KMD source)"
+	( cd "$src" && git sparse-checkout set techpack/camera ) \
+		|| die "sparse-checkout of techpack/camera failed"
+
+	[ -f "${src}/techpack/camera/Makefile" ] \
+		|| die "techpack/camera missing from the Android 11 branch; nothing to restore"
+
+	cp -r "${src}/techpack/camera" "$camdir"
+	[ -f "${camdir}/Makefile" ] || die "camera KMD copy failed"
+	rm -rf "$src"
+
+	ok "techpack/camera KMD restored (kona source from oneplus/SM8250_R_11.0_9R)"
+	summary "| camera KMD | restored from oneplus/SM8250_R_11.0_9R |"
+	endgroup
+}
+
 # ============================================================== extra patches
 
 SUKISU_PATCH_REPO=${SUKISU_PATCH_REPO:-https://github.com/ShirkNeko/SukiSU_patch.git}
@@ -440,8 +484,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			if is_true "${ENABLE_SUSFS:-false}";      then susfs_apply;      fi
 			if is_true "${ENABLE_HIDE_STUFF:-false}"; then hide_stuff_apply; fi
 			if is_true "${ENABLE_MODVERSIONS_TOLERANCE:-false}"; then modversions_tolerance_apply; fi
+			if is_true "${ENABLE_CAMX_KMD:-false}";   then camx_kmd_apply;   fi
 			;;
 			modversions_tolerance) modversions_tolerance_apply ;;
+			camx_kmd)              camx_kmd_apply ;;
 		*) die "unknown patch step '$1'" ;;
 	esac
 fi
