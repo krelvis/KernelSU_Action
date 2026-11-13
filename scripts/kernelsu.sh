@@ -229,6 +229,20 @@ ksu_install() {
 		fi
 	fi
 
+	# kpm.c calls the 5.0+-style two-argument access_ok() directly, bypassing
+	# the ksu_access_ok() shim in kernel_compat.h (which already handles the
+	# pre-5.0 three-argument form via VERIFY_READ). KPM is disabled for this
+	# build but the file is still compiled (it is #included by ksu_main.c),
+	# so fix the call site instead of skipping it. Only applies pre-5.0.
+	local kpm_c
+	kpm_c="${ksu_dir}/kernel/extension/kpm/kpm.c"
+	if [ -f "$kpm_c" ] && ! ver_ge "$kver" "5.0"; then
+		if grep -q 'access_ok(u64_to_user_ptr(cmd.result_code), sizeof(result))' "$kpm_c"; then
+			sed -i 's@access_ok(u64_to_user_ptr(cmd.result_code), sizeof(result))@access_ok(VERIFY_WRITE, u64_to_user_ptr(cmd.result_code), sizeof(result))@' "$kpm_c"
+			warn "fixed two-argument access_ok() in kpm.c for kernel ${kver}"
+		fi
+	fi
+
 	# Confirm we landed on the ref we asked for, catching the silent fallback.
 	local head_desc head_sha
 	head_sha=$(git -C "$ksu_dir" rev-parse --short HEAD)
