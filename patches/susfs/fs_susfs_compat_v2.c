@@ -26,6 +26,18 @@ static void ksu155_extra_work_noop(struct work_struct *work)
 	(void)work;
 }
 
+/*
+ * The manual-hooks patch wires drivers/tty/pty.c to call ksu_handle_devpts(),
+ * but builtin's sucompat.c only defines it inside the non-SUSFS branch of its
+ * CONFIG_KSU_SUSFS #else ("dead code" stub). Provide the symbol for SUSFS
+ * builds; devpts su-substitution is not part of the 1.5.5 flow.
+ */
+int ksu_handle_devpts(struct inode *inode)
+{
+	(void)inode;
+	return 0;
+}
+
 /* The OnePlusOSS tree lacks mainline's DEFINE_WORK; DECLARE_WORK is identical. */
 #ifndef DEFINE_WORK
 #define DEFINE_WORK(n, f) DECLARE_WORK(n, f)

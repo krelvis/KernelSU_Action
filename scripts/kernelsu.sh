@@ -243,6 +243,17 @@ ksu_install() {
 		fi
 	fi
 
+	# sulog/event.c calls strncpy_from_user_nofault() directly (unguarded);
+	# pre-5.8 kernels lack it and vmlinux fails to link. Route it through
+	# the kernel_compat.h wrapper, which carries the proper fallbacks.
+	local event_c
+	event_c="${ksu_dir}/kernel/sulog/event.c"
+	if [ -f "$event_c" ] && grep -q 'strncpy_from_user_nofault(arg, (const void __user \*)' "$event_c" \
+		&& ! grep -q 'ksu_strncpy_from_user_nofault(arg, (const void __user \*)' "$event_c"; then
+		sed -i 's@strncpy_from_user_nofault(arg, (const void __user \*)@ksu_strncpy_from_user_nofault(arg, (const void __user *)@' "$event_c"
+		warn "routed sulog/event.c strncpy_from_user_nofault through the compat wrapper for kernel ${kver}"
+	fi
+
 	# Confirm we landed on the ref we asked for, catching the silent fallback.
 	local head_desc head_sha
 	head_sha=$(git -C "$ksu_dir" rev-parse --short HEAD)
