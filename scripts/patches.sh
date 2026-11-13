@@ -479,6 +479,39 @@ hooks_patch_apply() {
 	endgroup
 }
 
+# SukiSU-Ultra's builtin branch flips ksu_handle_stat()/ksu_handle_faccessat()
+# to `struct filename **` signatures when CONFIG_KSU_SUSFS is on. Those
+# signatures only work for 5.10+ hook call sites (vfs_statx + getname);
+# pre-GKI manual hook patches inject at the raw syscall layer where only
+# `const char __user **` exists. Calling the struct-filename handler with a
+# user-space string pointer crashes at init's first newfstatat: the handler
+# dereferences user memory as if it were kernel struct filename ->
+# "Unable to handle kernel access to user memory outside uaccess routines"
+# (ESR 0x9600000f, PID 1, ~2.4s) -> panic("Attempted to kill init") ->
+# boot loop. The compat patch hoists the user-pointer helpers out of the
+# #else branch of sucompat.c and rewires the SUSFS-branch handlers back to
+# user-pointer semantics, matching the call sites above.
+sucompat_userptr_compat_apply() {
+	local ksu_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
+	local patch="${REPO_ROOT}/patches/ksu/sukisu_susfs_sucompat_userptr_compat.patch"
+
+	[ -f "$ksu_dir/kernel/feature/sucompat.h" ] || {
+		warn "KernelSU tree not found at ${ksu_dir}; skipping sucompat compat"
+		return 0
+	}
+	if ! grep -qF 'int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);' \
+		"$ksu_dir/kernel/feature/sucompat.h"; then
+		info "KSU tree does not use the SUSFS struct-filename stat signature; sucompat compat not needed"
+		return 0
+	fi
+
+	group "Applying KSU sucompat user-pointer compat (SUSFS)"
+	[ -f "$patch" ] || die "missing ${patch}"
+	( cd "$ksu_dir" && apply_patch "$patch" 1 ) \
+		|| die "the sucompat userptr compat patch did not apply"
+	endgroup
+}
+
 # ======================================================================== KPM
 
 # SukiSU-Ultra's Kernel Patch Module support needs a post-link step: the
@@ -524,6 +557,11 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			if [ "${KSU_VARIANT:-none}" != "none" ] &&
 			   [ "${KSU_HOOK_MODE_RESOLVED:-}" = "manual" ]; then
 				hooks_patch_apply
+				# The manual hook call sites pass `const char __user **`; make
+				# the KSU-side handlers accept that even under SUSFS. Self
+				# -guarding: only fires when the struct-filename signature
+				# (SUSFS variant) is present in the KSU tree.
+				sucompat_userptr_compat_apply
 			fi
 
 			if is_true "${ENABLE_SUSFS:-false}";      then susfs_apply;      fi
@@ -533,6 +571,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			;;
 			modversions_tolerance) modversions_tolerance_apply ;;
 			camx_kmd)              camx_kmd_apply ;;
+			sucompat_compat)       sucompat_userptr_compat_apply ;;
 		*) die "unknown patch step '$1'" ;;
 	esac
 fi

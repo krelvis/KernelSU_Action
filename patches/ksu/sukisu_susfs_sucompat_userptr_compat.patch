@@ -1,0 +1,203 @@
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -38,6 +38,73 @@
+     return userspace_stack_buffer(ksud_path, sizeof(ksud_path));
+ }
+ 
++/*
++ * SUSFS builds flip ksu_handle_stat()/ksu_handle_faccessat() to
++ * `struct filename **` signatures, which only 5.10+ manual hook call sites
++ * (vfs_statx + getname) can provide. Pre-GKI hook patches inject at the raw
++ * syscall layer where only `const char __user **` exists, so these shared
++ * helpers live outside the SUSFS conditional and both handler variants
++ * funnel through them.
++ */
++__attribute__((hot)) static __always_inline bool __is_su_allowed(const void **ptr_to_check)
++{
++    if (!ksu_su_compat_enabled)
++        return false;
++
++    if (likely(test_thread_flag(TIF_SECCOMP)))
++        return false;
++
++    if (!ksu_is_allow_uid_for_current(current_uid().val))
++        return false;
++
++    if (unlikely(!ptr_to_check))
++        return false;
++
++    if (unlikely(!*ptr_to_check))
++        return false;
++
++    return true;
++}
++#define is_su_allowed(ptr) (__is_su_allowed((const void **)ptr))
++
++static noinline int ksu_sucompat_user_common(const char __user **filename_user, const char *syscall_name,
++                                             const bool escalate)
++{
++    char path[sizeof(su_path)] = { 0 }; // sizeof includes nullterm already!
++    long len = ksu_strncpy_from_user_nofault(path, *filename_user, sizeof(path));
++    int ret = 0;
++
++    if (unlikely(len <= 0))
++        return -EFAULT;
++
++    if (likely(memcmp(path, su_path, sizeof(su_path))))
++        return 0;
++
++    if (!escalate)
++        goto no_escalate;
++
++    ret = escape_with_root_profile();
++    if (!!ret)
++        return ret;
++
++    // NOTE: we only check file existence, not exec success!
++    struct path kpath;
++    if (!!kern_path(ksud_path, 0, &kpath))
++        goto no_ksud;
++
++    path_put(&kpath);
++    pr_info("%s su->ksud!\n", syscall_name);
++    *filename_user = ksud_user_path();
++    return 0;
++
++no_ksud:
++no_escalate:
++    pr_info("%s su->sh!\n", syscall_name);
++    *filename_user = sh_user_path();
++    return 0;
++}
++
++
+ 
+ #ifdef CONFIG_KSU_SUSFS
+ /*
+@@ -179,103 +246,29 @@
+                         flags);
+ }
+ 
+-int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
++// Pre-GKI manual hook call sites (fs/open.c, fs/stat.c) only ever provide
++// the raw `const char __user **` filename; use the shared user-pointer
++// helpers hoisted above the SUSFS block instead of dereferencing the
++// user-space pointer as if it were a kernel `struct filename *`.
++int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+              int *__unused_flags)
+ {
+-    if (unlikely(IS_ERR(*filename) || (*filename)->name == NULL))
+-        return 0;
+-
+-    if (likely(memcmp((*filename)->name, su_path, sizeof(su_path))))
++    if (!is_su_allowed(filename_user))
+         return 0;
+ 
+-    if (current_chrooted())
+-    {
+-        pr_err("ksu_handle_faccessat: su found but NOT allowed! Because current process is running in chrooted environment\n");
+-        return 0;
+-    }
+-
+-    pr_info("ksu_handle_faccessat: su->sh!\n");
+-    memcpy((void *)((*filename)->name), sh_path, sizeof(sh_path));
++    ksu_sucompat_user_common(filename_user, "faccessat", false);
+     return 0;
+ }
+ 
+-int ksu_handle_stat(int *dfd, struct filename **filename, int *flags) {
+-    if (unlikely(IS_ERR(*filename) || (*filename)->name == NULL))
+-        return 0;
+-
+-    if (likely(memcmp((*filename)->name, su_path, sizeof(su_path))))
+-        return 0;
+-
+-    if (current_chrooted())
+-    {
+-        pr_err("ksu_handle_stat: su found but NOT allowed! Because current process is running in chrooted environment\n");
++int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags) {
++    if (!is_su_allowed(filename_user))
+         return 0;
+-    }
+ 
+-    pr_info("ksu_handle_stat: su->sh!\n");
+-    memcpy((void *)((*filename)->name), sh_path, sizeof(sh_path));
++    ksu_sucompat_user_common(filename_user, "newfstatat", false);
+     return 0;
+ }
+ 
+ #else
+-__attribute__((hot)) static __always_inline bool __is_su_allowed(const void **ptr_to_check)
+-{
+-    if (!ksu_su_compat_enabled)
+-        return false;
+-
+-    if (likely(test_thread_flag(TIF_SECCOMP)))
+-        return false;
+-
+-    if (!ksu_is_allow_uid_for_current(current_uid().val))
+-        return false;
+-
+-    if (unlikely(!ptr_to_check))
+-        return false;
+-
+-    if (unlikely(!*ptr_to_check))
+-        return false;
+-
+-    return true;
+-}
+-#define is_su_allowed(ptr) (__is_su_allowed((const void **)ptr))
+-
+-static noinline int ksu_sucompat_user_common(const char __user **filename_user, const char *syscall_name,
+-                                             const bool escalate)
+-{
+-    char path[sizeof(su_path)] = { 0 }; // sizeof includes nullterm already!
+-    long len = ksu_strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+-    int ret = 0;
+-
+-    if (unlikely(len <= 0))
+-        return -EFAULT;
+-
+-    if (likely(memcmp(path, su_path, sizeof(su_path))))
+-        return 0;
+-
+-    if (!escalate)
+-        goto no_escalate;
+-
+-    ret = escape_with_root_profile();
+-    if (!!ret)
+-        return ret;
+-
+-    // NOTE: we only check file existence, not exec success!
+-    struct path kpath;
+-    if (!!kern_path(ksud_path, 0, &kpath))
+-        goto no_ksud;
+-
+-    path_put(&kpath);
+-    pr_info("%s su->ksud!\n", syscall_name);
+-    *filename_user = ksud_user_path();
+-    return 0;
+-
+-no_ksud:
+-no_escalate:
+-    pr_info("%s su->sh!\n", syscall_name);
+-    *filename_user = sh_user_path();
+-    return 0;
+-}
+-
+ int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags)
+ {
+     if (!is_su_allowed(filename_user))
+--- a/kernel/feature/sucompat.h
++++ b/kernel/feature/sucompat.h
+@@ -6,8 +6,8 @@
+ extern bool ksu_su_compat_enabled;
+ 
+ #ifdef CONFIG_KSU_SUSFS
+-int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode, int *__unused_flags);
+-int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
++int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags);
++int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+                  void *argv_user, void *envp_user,
+                  int *flags);
