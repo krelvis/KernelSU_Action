@@ -213,7 +213,7 @@ ksu_install() {
 	# for pre-GKI kernels. Without this, 4.19 dies with
 	# "fatal error: 'linux/static_call.h' file not found".
 	local inc_h
-	inc_h="${dir}/kernel/kernel_includes.h"
+	inc_h="${ksu_dir}/kernel/kernel_includes.h"
 	if [ -f "$inc_h" ] && ! ver_ge "$kver" "5.10"; then
 		if grep -q '<linux/static_call\.h>' "$inc_h"; then
 			sed -i 's@^#include <linux/static_call\.h>$@#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>\n#endif@' "$inc_h"
