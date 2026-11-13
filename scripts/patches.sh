@@ -71,6 +71,42 @@ susfs_apply() {
 	cp -v "${kp}/fs/"*.c              "${KERNEL_DIR}/fs/"            2>/dev/null || true
 	cp -v "${kp}/include/linux/"*.h   "${KERNEL_DIR}/include/linux/" 2>/dev/null || true
 
+	# 1.5 Bridge SukiSU-Ultra's builtin tree (SUSFS v2.x client) to kernel-side
+	#    SUSFS v1.5.5: rename the 1.5.5 user-facing functions to susfs155_* and
+	#    compile fs/susfs_compat_v2.c, which implements the v2 names/signatures
+	#    (supercall surface, selinux sid stubs, task-state helpers) on top of
+	#    them. v2-only features degrade to -ENOTSUPP.
+	if [ "${KSU_NAME:-}" = "SukiSU-Ultra" ] && [ "${KSU_REF_RESOLVED:-}" = "builtin" ]; then
+		info "bridging SukiSU builtin (v2 client) to kernel-side SUSFS v1.5.5"
+		sed -i -E \
+			-e 's/susfs_add_sus_path\(/susfs155_add_sus_path(/g' \
+			-e 's/susfs_add_sus_kstat\(/susfs155_add_sus_kstat(/g' \
+			-e 's/susfs_update_sus_kstat\(/susfs155_update_sus_kstat(/g' \
+			-e 's/susfs_set_uname\(/susfs155_set_uname(/g' \
+			-e 's/susfs_set_cmdline_or_bootconfig\(/susfs155_set_cmdline_or_bootconfig(/g' \
+			-e 's/susfs_add_open_redirect\(/susfs155_add_open_redirect(/g' \
+			"${KERNEL_DIR}/fs/susfs.c" "${KERNEL_DIR}/include/linux/susfs.h" \
+			|| die "failed to rename 1.5.5 susfs entry points for the builtin bridge"
+
+		cp "${REPO_ROOT}/patches/susfs/include/susfs_compat_v2.h" \
+			"${KERNEL_DIR}/include/linux/susfs_compat_v2.h" \
+			|| die "failed to install susfs_compat_v2.h"
+		cp "${REPO_ROOT}/patches/susfs/fs_susfs_compat_v2.c" \
+			"${KERNEL_DIR}/fs/susfs_compat_v2.c" \
+			|| die "failed to install fs_susfs_compat_v2.c"
+
+		grep -q 'susfs_compat_v2\.o' "${KERNEL_DIR}/fs/Makefile" \
+			|| printf 'obj-$(CONFIG_KSU_SUSFS) += susfs_compat_v2.o\n' >>"${KERNEL_DIR}/fs/Makefile"
+
+		local ksu_inc_h="${KERNEL_DIR}/${KSU_DIR:-KernelSU}/kernel/kernel_includes.h"
+		if [ -f "$ksu_inc_h" ] && ! grep -q 'susfs_compat_v2\.h' "$ksu_inc_h"; then
+			sed -i 's@#include <linux/susfs\.h>@#include <linux/susfs.h>\n#include <linux/susfs_compat_v2.h>@' "$ksu_inc_h"
+			grep -q 'susfs_compat_v2\.h' "$ksu_inc_h" \
+				|| warn "susfs_compat_v2.h was not wired into kernel_includes.h"
+		fi
+		ok "SUSFS v2<->v1.5.5 bridge installed"
+	fi
+
 	# 2. Patch the kernel itself.
 	# A repo-local adapted patch (patches/susfs/50_add_susfs_in_<branch>_oplus_adapted.patch)
 	# takes precedence: non-GKI OPLUS/OnePlusOSS trees need hand-ported hunks
