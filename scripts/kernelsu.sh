@@ -248,9 +248,8 @@ ksu_install() {
 	# the kernel_compat.h wrapper, which carries the proper fallbacks.
 	local event_c
 	event_c="${ksu_dir}/kernel/sulog/event.c"
-	if [ -f "$event_c" ] && grep -q 'strncpy_from_user_nofault(arg, (const void __user \*)' "$event_c" \
-		&& ! grep -q 'ksu_strncpy_from_user_nofault(arg, (const void __user \*)' "$event_c"; then
-		sed -i 's@strncpy_from_user_nofault(arg, (const void __user \*)@ksu_strncpy_from_user_nofault(arg, (const void __user *)@' "$event_c"
+	if [ -f "$event_c" ] && grep -q 'strncpy_from_user_nofault(arg, (const void __user \*)' "$event_c"; then
+		sed -i 's@\([^_a-zA-Z]\)strncpy_from_user_nofault(arg, (const void __user \*)@\1ksu_strncpy_from_user_nofault(arg, (const void __user *)@' "$event_c"
 		warn "routed sulog/event.c strncpy_from_user_nofault through the compat wrapper for kernel ${kver}"
 	fi
 
