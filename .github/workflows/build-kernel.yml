@@ -421,6 +421,12 @@ jobs:
       - name: Apply kernel patches
         run: bash scripts/patches.sh all
 
+      - name: Inject OPPO module-signing cert
+        run: |
+          mkdir -p "${WORKSPACE}/android-kernel/certs"
+          cp certs/oppo_mods_signing.pem "${WORKSPACE}/android-kernel/certs/oppo_mods_signing.pem"
+          echo "cert injected: $(wc -c < "${WORKSPACE}/android-kernel/certs/oppo_mods_signing.pem") bytes"
+
       - name: Set up ccache
         if: env.ENABLE_CCACHE == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
