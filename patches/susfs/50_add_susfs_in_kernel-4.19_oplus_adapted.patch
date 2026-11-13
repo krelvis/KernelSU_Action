@@ -1259,18 +1259,28 @@ diff --git a/include/linux/sched.h b/include/linux/sched.h
 index 50012be..c3c996c 100644
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -1674,6 +1674,11 @@ struct task_struct {
+@@ -1682,11 +1682,21 @@ struct task_struct {
  
- 	ANDROID_KABI_USE(1, unsigned frozen:1);
+ 	/* CPU-specific state of this task: */
+ 	struct thread_struct		thread;
  
-+#if defined(CONFIG_KSU_SUSFS)
+ 	/*
+ 	 * WARNING: on x86, 'thread_struct' contains a variable-sized
+ 	 * structure.  It *MUST* be at the end of 'task_struct'.
+ 	 *
+ 	 * Do not put anything below here!
+ 	 */
++
++#ifdef CONFIG_KSU_SUSFS
++	/* SUSFS task state. Placed AFTER struct thread_struct (the very end
++	 * of task_struct) so that the offsets of every stock member stay
++	 * identical to the vendor tree. ABI requirement: prebuilt vendor
++	 * modules were compiled against the stock layout and still
++	 * dereference task_struct members directly. */
 +	u64 susfs_task_state;
 +	u64 susfs_last_fake_mnt_id;
 +#endif
-+
- 	/*
- 	 * New fields for task_struct should be added above here, so that
- 	 * they are included in the randomized portion of task_struct.
+ };
 diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
 index b8ec1db..6c48a53 100644
 --- a/kernel/kallsyms.c
