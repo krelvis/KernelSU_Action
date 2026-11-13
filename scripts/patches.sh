@@ -275,6 +275,49 @@ EOF
 	endgroup
 }
 
+# ===================================================== modversions tolerance
+#
+# The ColorOS vendor module tree (/vendor/lib/modules, 45 .ko) was compiled
+# from OPPO's internal tree, which has drifted from the public OnePlusOSS
+# tree this build uses. genksyms hashes every type reachable from a symbol's
+# prototype, so even benign drift (config key renames, reordered headers)
+# changes the CRCs -- the ABI itself still matches. Unpatched, check_version()
+# rejects every such module with "disagrees about version of symbol ...
+# (err -22)" and the device boots with no Wi-Fi, no audio and 0 vendor
+# modules.
+#
+# The fix downgrades a CRC mismatch to a warning and loads the module anyway.
+# module_layout is the one exception: its CRC covers struct module itself, so
+# a mismatch there means kernel and module genuinely disagree about memory
+# layout and loading would corrupt the kernel. That check stays strict.
+modversions_tolerance_apply() {
+	local mc="${KERNEL_DIR}/kernel/module.c"
+	group "Applying MODVERSIONS CRC tolerance"
+
+	[ -f "$mc" ] || die "kernel/module.c not found under ${KERNEL_DIR}"
+
+	if grep -q 'MODVERSIONS CRC tolerance' "$mc"; then
+		info "kernel/module.c already carries the CRC tolerance edit; nothing to do"
+		endgroup; return 0
+	fi
+
+	grep -q 'disagrees about version of symbol' "$mc" \
+		|| die "could not find the bad_version anchor in kernel/module.c; the tree has drifted from 4.19 upstream"
+
+	# Anchor on the exact 4.19 bad_version block. If the tree ever reshapes
+	# it the edit lands nowhere and the verification grep below fails loudly.
+	perl -0pi -e '
+s/bad_version:\n\tpr_warn\("%s: disagrees about version of symbol %s\\n",\n\t       info->name, symname\);\n\treturn 0;/bad_version:\n\tpr_warn("%s: disagrees about version of symbol %s\\n",\n\t       info->name, symname);\n\t\/* MODVERSIONS CRC tolerance: vendor modules were built from a tree\n\t * that diverged from this one, so many exported symbols hash differently\n\t * even though the ABI matches. Downgrade mismatches to a warning so the\n\t * modules still load. module_layout is the one exception -- a mismatch\n\t * there means struct module itself differs and loading would corrupt\n\t * kernel memory, so that check stays strict. *\/\n\tif (strcmp(symname, "module_layout") != 0)\n\t\treturn 1;\n\treturn 0;/
+' "$mc"
+
+	grep -q 'MODVERSIONS CRC tolerance' "$mc" \
+		|| die "the CRC tolerance edit did not land; kernel/module.c no longer matches the 4.19 shape"
+
+	ok "kernel/module.c: CRC mismatches now warn and load (module_layout stays enforced)"
+	summary "| MODVERSIONS tolerance | applied (module_layout still enforced) |"
+	endgroup
+}
+
 # ============================================================== extra patches
 
 SUKISU_PATCH_REPO=${SUKISU_PATCH_REPO:-https://github.com/ShirkNeko/SukiSU_patch.git}
@@ -396,7 +439,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 
 			if is_true "${ENABLE_SUSFS:-false}";      then susfs_apply;      fi
 			if is_true "${ENABLE_HIDE_STUFF:-false}"; then hide_stuff_apply; fi
+			if is_true "${ENABLE_MODVERSIONS_TOLERANCE:-false}"; then modversions_tolerance_apply; fi
 			;;
+			modversions_tolerance) modversions_tolerance_apply ;;
 		*) die "unknown patch step '$1'" ;;
 	esac
 fi
