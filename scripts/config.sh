@@ -64,6 +64,7 @@ declare -A DEFAULTS=(
 	[ENABLE_PATH_UMOUNT]="false"
 	[ENABLE_HIDE_STUFF]="false"
 	[ENABLE_KPM]="false"
+	[ENABLE_MODVERSIONS_TOLERANCE]="false"
 
 	# Kconfig tweaks
 	[ADD_KPROBES_CONFIG]="false"
