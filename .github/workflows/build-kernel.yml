@@ -442,26 +442,22 @@ jobs:
 
       # Clean boot = official stock ramdisk + this build's kernel + stock
       # trailing DTB + stock cmdline (enforcing). No Magisk anywhere; root
-      # comes from the KernelSU builtin inside the kernel Image. The official
-      # v4.3.0-r2 ksud binary is planted at /ksud in the ramdisk; the kernel
-      # (sukisu_ksud_bootstrap.diff) copies it to /data/adb/ksud during the
-      # first boot, so a FRESH device (factory reset / first flash) reaches
-      # root with no external root provider and no magica deadlock.
+      # comes from the KernelSU builtin inside the kernel Image. Fresh-device
+      # bootstrap (factory reset / first flash) is handled IN THE KERNEL:
+      # sukisu_ksud_bootstrap.diff detects the crowned manager exec'ing the
+      # missing /data/adb/ksud and installs it from the manager APK's own
+      # native libs -- the boot ramdisk stays byte-identical to stock
+      # (injection would blow the 96 MiB boot partition: kernel is ~15 MiB
+      # larger than stock, DTB eats 52 MiB, and a 6 MiB ksud does not fit).
       - name: Compose clean boot (official ramdisk)
         run: |
           curl -sfL --retry 3 -o kernel_workspace/stock-boot.img \
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/stock-boot-lemonades/boot.img"
-          # ksud must match the kernel's KSU version (v4.3.0-r2, 41150-6):
-          # a mismatched ksud fails ksucalls::ensure_uapi_version_matched.
-          curl -sfL --retry 3 -o kernel_workspace/ksud \
-            "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/download/v4.3.0-r2/ksud-aarch64-linux-android"
-          chmod +x kernel_workspace/ksud
-          ls -la kernel_workspace/stock-boot.img kernel_workspace/ksud
+          ls -la kernel_workspace/stock-boot.img
           python3 scripts/compose_boot.py \
             kernel_workspace/stock-boot.img \
             "kernel_workspace/android-kernel/out/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" \
-            kernel_workspace/boot-official-ramdisk.img \
-            kernel_workspace/ksud
+            kernel_workspace/boot-official-ramdisk.img
 
       - name: Export build metadata
         id: meta

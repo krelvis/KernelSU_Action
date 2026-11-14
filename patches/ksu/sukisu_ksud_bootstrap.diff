@@ -1,83 +1,283 @@
-diff --git "a/kernel/runtime/ksud.c" "b/kernel/runtime/ksud.c"
-index 930aa46..9812e5b 100644
---- "a/kernel/runtime/ksud.c"
-+++ "b/kernel/runtime/ksud.c"
-@@ -40,6 +40,69 @@ DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -114,6 +114,22 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+     if (IS_ERR(filename))
+         return -EINVAL;
+ 
++    /*
++     * ksud bootstrap: on a fresh device /data/adb/ksud is missing and the
++     * manager's magica exec would fail with ENOENT, deadlocking root.
++     * Install it from the manager APK's native libs; right after the
++     * install, escalate the exec so the fresh binary runs from the ksu
++     * domain (the forked magica child is still untrusted_app).
++     */
++    if (unlikely(!memcmp(filename->name, ksud_path, sizeof(ksud_path)))) {
++        extern bool ksu_manager_uid_authorized(uid_t uid);
++        extern int ksu_bootstrap_install_ksud(void);
++
++        if (ksu_manager_uid_authorized(current_uid().val) &&
++            ksu_bootstrap_install_ksud() > 0)
++            escape_with_root_profile();
++    }
++
+     if (!ksu_handle_execveat_init(filename, (struct user_arg_ptr*)argv_user, (struct user_arg_ptr*)envp_user))
+         return -EINVAL;
+ 
+diff --git a/a/kernel/runtime/ksud.c b/a/kernel/runtime/ksud.c
+--- a/kernel/runtime/ksud.c
++++ b/kernel/runtime/ksud.c
+@@ -40,6 +40,253 @@ DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
  DEFINE_STATIC_KEY_TRUE(is_first_zygote);
  #endif
  
 +/*
-+ * KSUD bootstrap: copy the ramdisk's /ksud into /data/adb/ksud so that a
-+ * fresh device (factory reset / first flash of the clean boot) reaches root
-+ * without ever needing an external root provider. on_post_fs_data() runs
-+ * from the first-zygote exec hook, i.e. after /data is mounted and
-+ * setup_ksu_cred() has prepared the ksu cred (uid 0, ksu SELinux domain,
-+ * "allow ksu ALL ALL ALL" injected by apply_kernelsu_rules). No-op when
-+ * /ksud is absent or ksud is already installed.
++ * KSUD bootstrap for fresh devices (factory reset, or the first flash of a
++ * clean boot image): /data/adb/ksud does not exist yet, so the manager's
++ * magica exec (execl /data/adb/ksud "late-load" ...) fails with ENOENT and
++ * root stays deadlocked -- the crowned manager ("working") never installs
++ * ksud by itself, and the kernel's init.rc hook needs the binary too.
++ *
++ * The manager APK, however, ships the full ksud ELF as a renamed native
++ * library. When the crowned manager execs KSUD_PATH and the file is
++ * missing, this routine resolves the manager's data path through
++ * /data/system/packages.list (line: "<pkg> <uid> <debug> <dataPath> ..."),
++ * picks the biggest .so under <dataPath>/lib/arm64[/-v8a] (the ksud ELF is
++ * by far the largest) and copies it into place under the ksu cred
++ * (uid 0, ksu SELinux domain, "allow ksu ALL ALL ALL" from
++ * apply_kernelsu_rules). ksud's own late-load stage then runs
++ * utils::install() and finishes the setup (bin/, lib/, restorecon).
++ *
++ * Called from the sucompat exec hook; returns 1 only when ksud was just
++ * installed by this call, in which case the caller escalates the execing
++ * process so the fresh binary runs from the ksu domain. Steady-state cost
++ * after the first install is a single cached dentry lookup.
 + */
-+static void ksu_bootstrap_install_ksud(void)
++#define KSU_BOOTSTRAP_MIN_KSUD_SIZE (1024UL * 1024UL)
++#define KSU_BS_MAX_NAMES 32
++#define KSU_BS_NAME_MAX 128
++
++struct ksu_bs_dirctx {
++    struct dir_context ctx;
++    char names[KSU_BS_MAX_NAMES][KSU_BS_NAME_MAX];
++    int count;
++};
++
++static int ksu_bs_filldir(struct dir_context *ctx, const char *name, int namlen,
++                          loff_t off, u64 ino, unsigned int d_type)
++{
++    struct ksu_bs_dirctx *c = container_of(ctx, struct ksu_bs_dirctx, ctx);
++
++    if (c->count >= KSU_BS_MAX_NAMES || d_type != DT_REG || namlen <= 3 ||
++        namlen >= KSU_BS_NAME_MAX)
++        return 0;
++    if (memcmp(name + namlen - 3, ".so", 3))
++        return 0;
++    memcpy(c->names[c->count], name, namlen);
++    c->names[c->count][namlen] = '\0';
++    c->count++;
++    return 0;
++}
++
++/* Parse /data/system/packages.list for the line whose uid field matches
++ * uid and copy its dataPath (the /data/app/... package directory). */
++static bool ksu_bootstrap_find_pkg_dir(char *out, size_t out_len, uid_t uid)
++{
++    struct file *f;
++    char *buf;
++    loff_t pos = 0;
++    ssize_t n;
++    bool found = false;
++    size_t len = PAGE_SIZE * 16;
++
++    buf = kvmalloc(len, GFP_KERNEL);
++    if (!buf)
++        return false;
++    f = filp_open("/data/system/packages.list", O_RDONLY, 0);
++    if (IS_ERR(f)) {
++        kvfree(buf);
++        return false;
++    }
++    n = kernel_read(f, buf, len - 1, &pos);
++    filp_close(f, NULL);
++    kvfree(buf);
++    if (n <= 0)
++        return false;
++    buf[n] = '\0';
++
++    {
++        char *cur = buf;
++        char *end = buf + n;
++        while (cur < end) {
++            char *sp, *p, *nl = memchr(cur, '\n', end - cur);
++            char *line_end;
++            unsigned long v = 0;
++
++            if (nl)
++                *nl = '\0';
++            line_end = nl ? nl : end;
++
++            sp = strchr(cur, ' ');
++            if (sp && sp + 1 < line_end) {
++                p = sp + 1;
++                while (p < line_end && *p >= '0' && *p <= '9')
++                    v = v * 10 + (*p++ - '0');
++                if (v == (unsigned long)uid) {
++                    /* skip the debug flag, then the dataPath follows */
++                    sp = strchr(p, ' ');
++                    if (sp && sp + 1 < line_end &&
++                                    memcmp(sp + 1, "/data/app/", 10) == 0) {
++                        size_t dl = line_end - (sp + 1);
++
++                        if (dl > 0 && dl < out_len) {
++                            memcpy(out, sp + 1, dl);
++                            out[dl] = '\0';
++                            found = true;
++                        }
++                    }
++                }
++            }
++
++            if (!nl)
++                break;
++            cur = nl + 1;
++        }
++    }
++    return found;
++}
++
++/* Pick the largest regular .so under <pkg_dir>/lib/arm64[/-v8a]; the
++ * manager ships its ksud binary renamed to a .so and it dwarfs every
++ * other library in there. */
++static bool ksu_bootstrap_find_ksud_lib(const char *pkg_dir, char *out,
++                                        size_t out_len)
++{
++    static const char *subdirs[] = { "lib/arm64", "lib/arm64-v8a" };
++    size_t plen = strlen(pkg_dir);
++    unsigned int s;
++
++    for (s = 0; s < ARRAY_SIZE(subdirs); s++) {
++        struct ksu_bs_dirctx c;
++        struct file *df;
++        const struct inode *di;
++        loff_t best = KSU_BOOTSTRAP_MIN_KSUD_SIZE;
++        bool found = false;
++        int i;
++        char dir[300];
++
++        if (plen + 1 + strlen(subdirs[s]) + 1 > sizeof(dir))
++            continue;
++        memcpy(dir, pkg_dir, plen);
++        dir[plen] = '/';
++        memcpy(dir + plen + 1, subdirs[s], strlen(subdirs[s]) + 1);
++
++        memset(&c, 0, sizeof(c));
++        c.ctx.actor = ksu_bs_filldir;
++        df = filp_open(dir, O_RDONLY | O_DIRECTORY, 0);
++        if (IS_ERR(df))
++            continue;
++        di = df->f_path.dentry->d_inode;
++        inode_lock_shared((struct inode *)di);
++        if (df->f_op->iterate_shared)
++            df->f_op->iterate_shared(df, &c.ctx);
++        inode_unlock_shared((struct inode *)di);
++        filp_close(df, NULL);
++
++        for (i = 0; i < c.count; i++) {
++            struct file *sf;
++            char p[300];
++            size_t dl = strlen(dir);
++            loff_t sz;
++
++            if (dl + 1 + strlen(c.names[i]) + 1 > sizeof(p))
++                continue;
++            memcpy(p, dir, dl);
++            p[dl] = '/';
++            memcpy(p + dl + 1, c.names[i], strlen(c.names[i]) + 1);
++
++            sf = filp_open(p, O_RDONLY, 0);
++            if (IS_ERR(sf))
++                continue;
++            sz = i_size_read(file_inode(sf));
++            filp_close(sf, NULL);
++            if (sz > best) {
++                best = sz;
++                if (dl + 1 + strlen(c.names[i]) + 1 <= out_len) {
++                    memcpy(out, p, dl + 1 + strlen(c.names[i]) + 1);
++                    found = true;
++                }
++            }
++        }
++
++        if (found)
++            return true;
++    }
++    return false;
++}
++
++/* Returns 1 when ksud was just installed by this call. */
++int ksu_bootstrap_install_ksud(void)
 +{
 +    const struct cred *old_cred;
++    char data_path[256];
++    char src_path[300];
 +    struct file *src, *dst;
 +    struct path kpath;
 +    char *buf;
 +    ssize_t n;
 +    loff_t spos = 0, dpos = 0;
++    int ret = 0;
 +
 +    if (!ksu_cred)
-+        return;
++        return 0;
 +
 +    old_cred = override_creds(ksu_cred);
 +
-+    /* Already installed by an earlier boot or an earlier call. */
++    /* Installed already? (cached lookup, negligible per-exec cost) */
 +    if (!kern_path(KSUD_PATH, 0, &kpath)) {
 +        path_put(&kpath);
 +        goto out_revert;
 +    }
 +
-+    src = filp_open("/ksud", O_RDONLY, 0);
-+    if (IS_ERR(src)) {
-+        pr_info("ksud bootstrap: no /ksud in ramdisk, skipping\n");
++    if (!ksu_bootstrap_find_pkg_dir(data_path, sizeof(data_path),
++        current_uid().val))
 +        goto out_revert;
-+    }
++
++    if (!ksu_bootstrap_find_ksud_lib(data_path, src_path, sizeof(src_path)))
++        goto out_revert;
 +
 +    buf = kvmalloc(PAGE_SIZE, GFP_KERNEL);
-+    if (!buf) {
-+        filp_close(src, NULL);
++    if (!buf)
 +        goto out_revert;
-+    }
++
++    src = filp_open(src_path, O_RDONLY, 0);
++    if (IS_ERR(src))
++        goto out_free;
 +
 +    dst = filp_open(KSUD_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0755);
 +    if (IS_ERR(dst)) {
 +        pr_err("ksud bootstrap: create " KSUD_PATH " failed: %ld\n",
 +            PTR_ERR(dst));
-+        kvfree(buf);
 +        filp_close(src, NULL);
-+        goto out_revert;
++        goto out_free;
 +    }
 +
 +    while ((n = kernel_read(src, buf, PAGE_SIZE, &spos)) > 0)
 +        kernel_write(dst, buf, n, &dpos);
 +
-+    kvfree(buf);
 +    filp_close(dst, NULL);
 +    filp_close(src, NULL);
-+    pr_info("ksud bootstrap: installed " KSUD_PATH " from ramdisk (%lld bytes)\n",
++    pr_info("ksud bootstrap: installed " KSUD_PATH " (%lld bytes)\n",
 +        (long long)dpos);
++    ret = 1;
 +
++out_free:
++    kvfree(buf);
 +out_revert:
 +    revert_creds(old_cred);
++    return ret;
 +}
 +
  void on_post_fs_data(void)
  {
      static bool done = false;
-@@ -50,6 +113,8 @@ void on_post_fs_data(void)
-     done = true;
-     pr_info("on_post_fs_data!\n");
- 
-+    ksu_bootstrap_install_ksud();
-+
-     ksu_load_allow_list();
-     ksu_dynamic_manager_load();
-     ksu_observer_init();

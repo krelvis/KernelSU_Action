@@ -635,12 +635,15 @@ s/\tretval = security_task_fix_setuid\(new, old, LSM_SETID_RES\);\n\tif \(retval
 # boot) has no /data/adb/ksud. The kernel's own init.rc hook and the
 # manager's magica exec both require the binary to already exist, and only
 # ksud itself can install it -- a deadlock proven experimentally on
-# 2026-11-14: manager crowned ("工作中") yet "获取 Root 失败!", even after
-# a full reboot. The compose step plants ksud at /ksud in the ramdisk; this
-# patch makes on_post_fs_data() copy it into /data/adb/ksud under the ksu
-# cred, closing the loop with no external root provider involved. The
-# runtime code is a no-op when /ksud is absent, so the patch is safe for
-# every KSU_VARIANT and always enabled (no config whitelist entry needed).
+# 2026-11-14: manager crowned ("工作中") yet "获取 Root 失败!", even after a
+# full reboot. Planting ksud in the boot ramdisk is impossible on lemonades
+# (96 MiB partition: kernel +15 MiB over stock, 52 MiB DTB, ramdisk budget
+# 3 MiB < 4.9 MiB compressed ksud), so instead the kernel resolves the
+# crowned manager's APK through /data/system/packages.list, copies the ksud
+# ELF it ships as a renamed native lib into /data/adb/ksud right from the
+# exec hook, and escalates that exec to the ksu domain; ksud's late-load
+# stage then runs its own utils::install() and finishes the setup. No
+# ramdisk change, no config whitelist entry, no-op for every other variant.
 ksud_bootstrap_apply() {
 	local ksu_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
 	local patch_file="${REPO_ROOT}/patches/ksu/sukisu_ksud_bootstrap.diff"
@@ -650,11 +653,11 @@ ksud_bootstrap_apply() {
 		return 0
 	}
 
-	group "Applying ksud ramdisk bootstrap (on_post_fs_data)"
+	group "Applying ksud bootstrap (exec hook installs from manager APK)"
 	( cd "$ksu_dir" && apply_patch "$patch_file" 1 ) \
 		|| die "the ksud bootstrap patch did not apply; the KSU tree has drifted from SukiSU builtin f9aa2fe"
-	ok "runtime/ksud.c: on_post_fs_data() now self-installs /data/adb/ksud from the ramdisk"
-	summary "| ksud ramdisk bootstrap | applied |"
+	ok "runtime/ksud.c + feature/sucompat.c: magica exec self-installs ksud from the manager APK"
+	summary "| ksud exec-hook bootstrap | applied |"
 	endgroup
 }
 

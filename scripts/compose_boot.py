@@ -20,7 +20,7 @@ Without it the boot is identical to the old plain clean boot.
 Pure stdlib; works with A-only boot headers (lemonades, page_size from
 header offset 36).
 """
-import struct, sys, hashlib, gzip
+import struct, sys, hashlib, gzip, lzma
 
 NEWC_MAGIC = b'070701'
 
@@ -71,7 +71,18 @@ def _cpio_inject_ksud(ramdisk_gz: bytes, ksud: bytes) -> bytes:
     entry = _newc_entry(b'ksud', ksud, max_ino + 1, 0o100755)
     new = data[:trailer_off] + entry + data[trailer_off:]
     print(f'ramdisk: injected /ksud ({len(ksud)} bytes, entry {len(entry)} bytes)')
-    return gzip.compress(new, mtime=0)
+    # The lemonades boot partition is exactly 96 MiB and the raw kernel is
+    # ~15 MiB larger than stock, so the ~3 MiB ramdisk budget left after the
+    # 52 MiB trailing DTB cannot fit the gzip'd 5.9 MB result. The kernel
+    # (and stock) both carry CONFIG_RD_LZMA=y, and lib/decompress_lzma.c
+    # understands the LZMA_ALONE header, so compress with lzma1/8M-dict
+    # instead -- roughly half the size of gzip for the embedded ELF.
+    out_lzma = lzma.compress(
+        new, format=lzma.FORMAT_ALONE,
+        filters=[{'id': lzma.FILTER_LZMA1, 'preset': 9 | lzma.PRESET_EXTREME,
+                  'dict_size': 8 * 1024 * 1024}])
+    print(f'ramdisk: lzma-compressed {len(new)} -> {len(out_lzma)} bytes')
+    return out_lzma
 
 
 def compose(stock_path, kernel_path, out_path, ksud_path=None):
@@ -122,6 +133,13 @@ def compose(stock_path, kernel_path, out_path, ksud_path=None):
     out += trailing
 
     open(out_path, 'wb').write(out)
+
+    # The lemonades boot partition is exactly the size of the stock boot
+    # image; fastboot would fail with "Volume Full" past it.
+    if len(out) > len(stock):
+        raise SystemExit(
+            f'FATAL: composed boot {len(out)} bytes exceeds the boot '
+            f'partition budget {len(stock)} bytes (stock image size)')
 
     c = open(out_path, 'rb').read()
     assert struct.unpack_from('<I', c, 8)[0] == len(img)
