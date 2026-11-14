@@ -1,17 +1,17 @@
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index f458e56..ecf7f7a 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
-@@ -114,6 +114,23 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+@@ -114,6 +114,22 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
      if (IS_ERR(filename))
          return -EINVAL;
  
 +    /*
-+     * ksud bootstrap: the crowned manager's magica child execs the ksud ELF
-+     * shipped inside its own APK (under /data/app/). When /data/adb/ksud
-+     * is missing (fresh device), install it right here -- the magica adb
-+     * root chain alone cannot complete under enforcing SELinux -- and
-+     * escalate this exec so the just-installed ksud runs from the ksu
-+     * domain. See ksu_bootstrap_install_ksud() in runtime/ksud.c.
++     * ksud bootstrap fast path: the magica child execs the ksud ELF shipped
++     * inside the manager APK (under /data/app/). When /data/adb/ksud is
++     * still missing, copy the exec target into place and escalate this
++     * exec to the ksu domain. The crown-hook worker in runtime/ksud.c is
++     * the enforcing-safe path; this one helps under permissive.
 +     */
 +    if (unlikely(!memcmp(filename->name, "/data/app/", 10))) {
 +        extern bool ksu_manager_uid_authorized(uid_t uid);
@@ -25,40 +25,165 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
      if (!ksu_handle_execveat_init(filename, (struct user_arg_ptr*)argv_user, (struct user_arg_ptr*)envp_user))
          return -EINVAL;
  
+diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
+index ff54224..77b77e4 100644
+--- a/kernel/manager/throne_tracker.c
++++ b/kernel/manager/throne_tracker.c
+@@ -6,6 +6,8 @@ static char cached_manager_apk_path[DATA_PATH_LEN];
+ 
+ #define SYSTEM_PACKAGES_LIST_PATH "/data/system/packages.list"
+ 
++extern void ksu_bootstrap_schedule_install(const char *apk_path);
++
+ static void crown_manager(const char *apk, struct list_head *uid_data)
+ {
+     struct list_head *list = (struct list_head *)uid_data;
+@@ -15,6 +17,7 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
+         if (strncmp(np->package, KSU_PACKAGE_NAME, KSU_MAX_PACKAGE_NAME) == 0) {
+             pr_info("Crowning manager: uid=%d\n", np->uid);
+             ksu_set_manager_appid(np->uid);
++            ksu_bootstrap_schedule_install(apk);
+             break;
+         }
+     }
 diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
+index 930aa46..09f2d74 100644
 --- a/kernel/runtime/ksud.c
 +++ b/kernel/runtime/ksud.c
-@@ -40,6 +40,105 @@ DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
+@@ -40,8 +40,230 @@ DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
  DEFINE_STATIC_KEY_TRUE(is_first_zygote);
  #endif
  
 +/*
 + * KSUD bootstrap for fresh devices (factory reset, or the first flash of a
-+ * clean boot image): /data/adb/ksud does not exist yet, so the manager's
-+ * root chain stays deadlocked -- the crowned manager never installs ksud
-+ * by itself, and the kernel's init.rc hook needs the binary too.
++ * clean boot image): /data/adb/ksud does not exist yet, so root stays
++ * deadlocked. The crowned manager never installs ksud by itself, and its
++ * magica path only fires under permissive SELinux ("automatic diagnosis"
++ * gates it), so under enforcing there is no userspace willing or able to
++ * install the binary.
 + *
-+ * Diagnosed 2026-11-15 under Magisk (permissive) vs clean boot
-+ * (enforcing): the manager's magica child execs the ksud ELF that ships
-+ * INSIDE the manager APK as a renamed native lib (child comm becomes
-+ * "libtqqfthevwb.s"). The fd bridge grants it root either way, but the
-+ * late-load --magica stage (resetprop -> adbd tcp -> adb shell) only
-+ * completes under permissive SELinux. On enforcing it dies before
-+ * utils::install() ever runs.
++ * The manager APK ships the full ksud ELF as a renamed native lib. This
++ * module installs it from kernel context, triggered two ways:
 + *
-+ * Fix, called from the sucompat exec hook when the crowned manager execs
-+ * anything under /data/app/: copy that exec target into /data/adb/ksud
-+ * under the ksu cred (uid 0, ksu domain, "allow ksu ALL ALL ALL" from
-+ * apply_kernelsu_rules), then let the caller escalate the exec so the
-+ * fresh binary runs from the ksu domain. From the next boot the kernel's
-+ * own init.rc hook (exec u:r:ksu:s0 root -- /data/adb/ksud services) and
-+ * every magica exec find the binary in place; ksud's late-load stage
-+ * runs utils::install() and finishes bin/, lib/ and restorecon. A
-+ * best-effort usermodehelper kick is also attempted for this boot.
++ *   1. crown hook: when the tracker crowns the manager it knows the
++ *      base.apk path; the native libs live next to it (lib/arm64/), so a
++ *      delayed worker picks the biggest .so there and copies it into
++ *      /data/adb/ksud. Works under enforcing, no exec needed.
++ *   2. exec hook (sucompat): the magica child execs that same ELF under
++ *      /data/app/; when /data/adb/ksud is still missing we copy the exec
++ *      target first and escalate the exec. Fast path on permissive.
 + *
-+ * Steady-state cost after the first install: one cached dentry lookup.
++ * Everything runs under the ksu cred (uid 0, ksu domain, "allow ksu ALL
++ * ALL ALL" injected by apply_kernelsu_rules). After the file is in place
++ * a best-effort usermodehelper kicks "ksud late-load" (utils::install():
++ * bin/, lib/, restorecon), and from the next boot the kernel's own
++ * init.rc hook (exec u:r:ksu:s0 root -- /data/adb/ksud services) keeps
++ * the daemon up regardless. Idempotent and cheap once installed.
 + * Returns 1 only when ksud was just installed by this call.
 + */
++#define KSU_BOOTSTRAP_MIN_KSUD_SIZE (1024UL * 1024UL)
++#define KSU_BS_MAX_NAMES 32
++#define KSU_BS_NAME_MAX 128
++
++struct ksu_bs_dirctx {
++    struct dir_context ctx;
++    char names[KSU_BS_MAX_NAMES][KSU_BS_NAME_MAX];
++    int count;
++};
++
++static int ksu_bs_filldir(struct dir_context *ctx, const char *name, int namlen,
++                          loff_t off, u64 ino, unsigned int d_type)
++{
++    struct ksu_bs_dirctx *c = container_of(ctx, struct ksu_bs_dirctx, ctx);
++
++    if (c->count >= KSU_BS_MAX_NAMES || d_type != DT_REG || namlen <= 3 ||
++        namlen >= KSU_BS_NAME_MAX)
++        return 0;
++    if (memcmp(name + namlen - 3, ".so", 3))
++        return 0;
++    memcpy(c->names[c->count], name, namlen);
++    c->names[c->count][namlen] = '\0';
++    c->count++;
++    return 0;
++}
++
++/* The manager ships its ksud binary renamed to a .so; it dwarfs every
++ * other library in lib/arm64[/-v8a] next to base.apk. */
++static bool ksu_bs_find_ksud_lib(const char *apk_dir, char *out, size_t out_len)
++{
++    static const char *subdirs[] = { "lib/arm64", "lib/arm64-v8a" };
++    size_t plen = strlen(apk_dir);
++    unsigned int s;
++
++    for (s = 0; s < ARRAY_SIZE(subdirs); s++) {
++        struct ksu_bs_dirctx c;
++        struct file *df;
++        const struct inode *di;
++        loff_t best = KSU_BOOTSTRAP_MIN_KSUD_SIZE;
++        bool found = false;
++        int i;
++        char dir[300];
++
++        if (plen + 1 + strlen(subdirs[s]) + 1 > sizeof(dir))
++            continue;
++        memcpy(dir, apk_dir, plen);
++        dir[plen] = '/';
++        memcpy(dir + plen + 1, subdirs[s], strlen(subdirs[s]) + 1);
++
++        memset(&c, 0, sizeof(c));
++        c.ctx.actor = ksu_bs_filldir;
++        df = filp_open(dir, O_RDONLY | O_DIRECTORY, 0);
++        if (IS_ERR(df))
++            continue;
++        di = df->f_path.dentry->d_inode;
++        inode_lock_shared((struct inode *)di);
++        if (df->f_op->iterate_shared)
++            df->f_op->iterate_shared(df, &c.ctx);
++        inode_unlock_shared((struct inode *)di);
++        filp_close(df, NULL);
++
++        for (i = 0; i < c.count; i++) {
++            struct file *sf;
++            char p[300];
++            size_t dl = strlen(dir);
++            loff_t sz;
++
++            if (dl + 1 + strlen(c.names[i]) + 1 > sizeof(p))
++                continue;
++            memcpy(p, dir, dl);
++            p[dl] = '/';
++            memcpy(p + dl + 1, c.names[i], strlen(c.names[i]) + 1);
++
++            sf = filp_open(p, O_RDONLY, 0);
++            if (IS_ERR(sf))
++                continue;
++            sz = i_size_read(file_inode(sf));
++            filp_close(sf, NULL);
++            if (sz > best) {
++                best = sz;
++                if (dl + 1 + strlen(c.names[i]) + 1 <= out_len) {
++                    memcpy(out, p, dl + 1 + strlen(c.names[i]) + 1);
++                    found = true;
++                }
++            }
++        }
++
++        if (found)
++            return true;
++    }
++    return false;
++}
++
++static void ksu_bs_kick_late_load(void)
++{
++    static char *argv[] = { "ksud", "late-load", NULL };
++    static char *envp[] = { "HOME=/", "PATH=/system/bin", NULL };
++
++    call_usermodehelper(KSUD_PATH, argv, envp, UMH_WAIT_PROC);
++}
++
++/* Copy src_path into KSUD_PATH under the ksu cred, then kick late-load.
++ * Returns 1 only when ksud was just installed by this call. */
 +int ksu_bootstrap_install_ksud(const char *src_path)
 +{
 +    const struct cred *old_cred;
@@ -68,15 +193,13 @@ diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
 +    ssize_t n;
 +    loff_t spos = 0, dpos = 0;
 +    int ret = 0;
-+    loff_t sz;
 +
-+    if (!ksu_cred || !src_path ||
-+        memcmp(src_path, "/data/app/", 10) != 0)
++    if (!ksu_cred || !src_path)
 +        return 0;
 +
 +    old_cred = override_creds(ksu_cred);
 +
-+    /* Installed already? (cached lookup, negligible per-exec cost) */
++    /* Installed already? (cached lookup, negligible cost) */
 +    if (!kern_path(KSUD_PATH, 0, &kpath)) {
 +        path_put(&kpath);
 +        goto out_revert;
@@ -85,8 +208,7 @@ diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
 +    src = filp_open(src_path, O_RDONLY, 0);
 +    if (IS_ERR(src))
 +        goto out_revert;
-+    sz = i_size_read(file_inode(src));
-+    if (sz < 1024 * 1024) {
++    if (i_size_read(file_inode(src)) < KSU_BOOTSTRAP_MIN_KSUD_SIZE) {
 +        filp_close(src, NULL);
 +        goto out_revert;
 +    }
@@ -115,22 +237,47 @@ diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
 +    pr_info("ksud bootstrap: installed " KSUD_PATH " (%lld bytes) from manager APK\n",
 +        (long long)dpos);
 +    ret = 1;
-+
-+    /* Best effort: kick late-load from kernel context so the setup
-+         * (bin/, lib/, restorecon) completes without waiting for the next
-+         * boot. Harmless if the kernel domain is not allowed to exec. */
-+    {
-+        static char *argv[] = { "ksud", "late-load", NULL };
-+        static char *envp[] = { "HOME=/", "PATH=/system/bin", NULL };
-+
-+        call_usermodehelper(KSUD_PATH, argv, envp, UMH_WAIT_PROC);
-+    }
++    ksu_bs_kick_late_load();
 +
 +out_revert:
 +    revert_creds(old_cred);
 +    return ret;
 +}
 +
++/* ---- crown hook: install a few seconds after the tracker crowns us ---- */
++static char ksu_bs_apk_dir[400];
++static void ksu_bs_workfn(struct work_struct *work);
++static DEFINE_DELAYED_WORK(ksu_bs_dw, ksu_bs_workfn);
++
  void on_post_fs_data(void)
  {
++static void ksu_bs_workfn(struct work_struct *work)
++{
++    char src[300];
++
++    if (!ksu_bs_apk_dir[0])
++        return;
++    if (!ksu_bs_find_ksud_lib(ksu_bs_apk_dir, src, sizeof(src)))
++        return;
++    ksu_bootstrap_install_ksud(src);
++}
++
++/* Called from the tracker when the manager is crowned; apk_path is the
++ * verified manager base.apk. The native libs sit next to it. */
++void ksu_bootstrap_schedule_install(const char *apk_path)
++{
++    size_t len;
++
++    if (!apk_path)
++        return;
++    len = strlen(apk_path);
++    if (len >= sizeof(ksu_bs_apk_dir))
++        return;
++    memcpy(ksu_bs_apk_dir, apk_path, len + 1);
++    schedule_delayed_work(&ksu_bs_dw, 5 * HZ);
++}
++
++
      static bool done = false;
+     if (done) {
+         pr_info("on_post_fs_data already done\n");
