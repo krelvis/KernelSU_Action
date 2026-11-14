@@ -440,6 +440,19 @@ jobs:
       - name: Package artifacts
         run: bash scripts/package.sh all
 
+      # Clean boot = official stock ramdisk + this build's kernel + stock
+      # trailing DTB + stock cmdline (enforcing). No Magisk anywhere; root
+      # comes from the KernelSU builtin inside the kernel Image.
+      - name: Compose clean boot (official ramdisk)
+        run: |
+          curl -sfL --retry 3 -o kernel_workspace/stock-boot.img \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/stock-boot-lemonades/boot.img"
+          ls -la kernel_workspace/stock-boot.img
+          python3 scripts/compose_boot.py \
+            kernel_workspace/stock-boot.img \
+            "kernel_workspace/android-kernel/out/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" \
+            kernel_workspace/boot-official-ramdisk.img
+
       - name: Export build metadata
         id: meta
         run: |
@@ -457,6 +470,13 @@ jobs:
         with:
           name: ${{ env.KERNEL_IMAGE_NAME }}${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
           path: kernel_workspace/android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }}
+          if-no-files-found: error
+
+      - name: Upload clean boot (official ramdisk)
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-official-ramdisk${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/boot-official-ramdisk.img
           if-no-files-found: error
 
       - name: Upload AnyKernel3
@@ -505,7 +525,7 @@ jobs:
             (cd "$dir" && zip -qr9 "${GITHUB_WORKSPACE}/release/${name}.zip" .)
             echo "packed ${name}.zip"
           done
-          for f in artifacts/*/Image* artifacts/*/boot.img artifacts/*/dtbo.img; do
+          for f in artifacts/*/Image* artifacts/*/boot.img artifacts/*/boot-official-ramdisk.img artifacts/*/dtbo.img; do
             [ -f "$f" ] && cp "$f" release/
           done
           ls -la release/
