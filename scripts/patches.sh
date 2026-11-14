@@ -66,17 +66,47 @@ susfs_apply() {
 	local kp="${susfs_dir}/kernel_patches"
 	[ -d "$kp" ] || die "unexpected susfs4ksu layout: ${kp} missing"
 
-	# 1. Drop in the SUSFS sources. The non-GKI branches carry sus_su.c too.
+	# Is the branch a SUSFS v2.x one (GKI branches)? The kernel-side sources
+	# then already speak the v2 interface natively, so the compat bridge is
+	# not needed and the OPLUS 4.19 sources/patch must come from the repo.
+	local sv_branch
+	sv_branch=$(sed -nE 's/.*SUSFS_VERSION[[:space:]]+"([^"]+)".*/\1/p' \
+		"${kp}/include/linux/susfs.h" 2>/dev/null | head -n1)
+	local is_v2=false
+	case "${sv_branch:-}" in
+		v2.*) is_v2=true ;;
+	esac
+	export_env SUSFS_V2_RESOLVED "$( $is_v2 && echo true || echo false )"
+	info "susfs branch ${branch} carries SUSFS ${sv_branch:-?} (v2 mode: $is_v2)"
+
+	# 1. Drop in the SUSFS sources.
+	#    - v1.x (non-GKI): copy the branch's kernel_patches sources verbatim.
+	#    - v2.x (GKI): use the repo-local 4.19-adapted sources instead; the
+	#      upstream v2 kernel side is written against 5.10+ APIs (statx
+	#      result_mask, kstat.mnt_id, struct selinux_policy ...) and needs the
+	#      hand-adapted copies. sus_su.c only exists on v1 branches.
+	if $is_v2; then
+		local src2x="${REPO_ROOT}/patches/susfs/sources_2.4.0"
+		[ -f "${src2x}/susfs.c" ] || die "SUSFS v2 mode selected but ${src2x}/susfs.c is missing"
+		info "copying repo-local 4.19-adapted SUSFS v2 sources into the kernel tree"
+		cp -v "${src2x}/susfs.c"     "${KERNEL_DIR}/fs/"            || die "failed to copy adapted susfs.c"
+		cp -v "${src2x}/susfs.h"     "${KERNEL_DIR}/include/linux/" || die "failed to copy adapted susfs.h"
+		cp -v "${src2x}/susfs_def.h" "${KERNEL_DIR}/include/linux/" || die "failed to copy adapted susfs_def.h"
+		rm -f "${KERNEL_DIR}/fs/sus_su.c" "${KERNEL_DIR}/fs/susfs_compat_v2.c" \
+			"${KERNEL_DIR}/include/linux/susfs_compat_v2.h"
+	else
 	info "copying SUSFS sources into the kernel tree"
 	cp -v "${kp}/fs/"*.c              "${KERNEL_DIR}/fs/"            2>/dev/null || true
 	cp -v "${kp}/include/linux/"*.h   "${KERNEL_DIR}/include/linux/" 2>/dev/null || true
+	fi
 
 	# 1.5 Bridge SukiSU-Ultra's builtin tree (SUSFS v2.x client) to kernel-side
 	#    SUSFS v1.5.5: rename the 1.5.5 user-facing functions to susfs155_* and
 	#    compile fs/susfs_compat_v2.c, which implements the v2 names/signatures
 	#    (supercall surface, selinux sid stubs, task-state helpers) on top of
 	#    them. v2-only features degrade to -ENOTSUPP.
-	if [ "${KSU_NAME:-}" = "SukiSU-Ultra" ] && [ "${KSU_REF_RESOLVED:-}" = "builtin" ]; then
+	#    Only for v1.5.5 kernels -- a v2 kernel speaks the v2 interface itself.
+	if [ "${KSU_NAME:-}" = "SukiSU-Ultra" ] && [ "${KSU_REF_RESOLVED:-}" = "builtin" ] && ! $is_v2; then
 		info "bridging SukiSU builtin (v2 client) to kernel-side SUSFS v1.5.5"
 		sed -i -E \
 			-e 's/susfs_add_sus_path\(/susfs155_add_sus_path(/g' \
@@ -112,9 +142,16 @@ susfs_apply() {
 	# takes precedence: non-GKI OPLUS/OnePlusOSS trees need hand-ported hunks
 	# (may_create signature, OPLUS namespace.c header block, fdinfo.c mask
 	# helper, sched.h without ANDROID_KABI_RESERVE slots).
-	local kernel_patch="${REPO_ROOT}/patches/susfs/50_add_susfs_in_${branch}_oplus_adapted.patch"
+	# For v2.x branches the same applies, but the port is version-named rather
+	# than branch-named: one 4.19 OPLUS adaptation serves every GKI branch.
+	local kernel_patch
+	if $is_v2; then
+		kernel_patch="${REPO_ROOT}/patches/susfs/50_add_susfs_in_2.4.0_oplus_4.19_adapted.patch"
+	else
+		kernel_patch="${REPO_ROOT}/patches/susfs/50_add_susfs_in_${branch}_oplus_adapted.patch"
+	fi
 	if [ -f "$kernel_patch" ]; then
-		info "using repo-local adapted SUSFS patch: patches/susfs/50_add_susfs_in_${branch}_oplus_adapted.patch"
+		info "using repo-local adapted SUSFS patch: ${kernel_patch#${REPO_ROOT}/patches/susfs/}"
 	else
 		kernel_patch="${kp}/50_add_susfs_in_${branch}.patch"
 		[ -f "$kernel_patch" ] || {
