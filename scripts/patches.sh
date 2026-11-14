@@ -618,7 +618,7 @@ s/\tretval = security_task_fix_setuid\(new, old, LSM_SETID_RES\);\n\tif \(retval
 \t * new uid is the crowned manager, exactly what upstream s
 \t * setuid_hook does. Runs before commit_creds so the fd lands in the
 \t * process that is about to become the manager. The ratelimited log
-\t * traces the condition while the setup is being proven out. *\/\n\t{\n\t\textern bool ksu_manager_uid_authorized(uid_t uid);\n\t\textern int ksu_install_fd(void);\n\t\tstatic DEFINE_RATELIMIT_STATE(_ksu_fd_rs, 5 * HZ, 4);\n\t\tuid_t _new_uid = from_kuid_munged(current_user_ns(), new->euid);\n\t\tbool _auth = ksu_manager_uid_authorized(_new_uid);\n\n\t\tif (__ratelimit(&_ksu_fd_rs))\n\t\t\tpr_info("SukiSU manager fd bridge: setresuid uid=%u auth=%d\\n", _new_uid, _auth);\n\t\tif (unlikely(!retval && _auth))\n\t\t\tksu_install_fd();\n\t}\n/
+\t * traces the condition while the setup is being proven out. *\/\n\t{\n\t\textern bool ksu_manager_uid_authorized(uid_t uid);\n\t\textern int ksu_install_fd(void);\n\t\tstatic DEFINE_RATELIMIT_STATE(_ksu_fd_rs, 5 * HZ, 4);\n\t\tuid_t _new_uid = from_kuid_munged(current_user_ns(), new->euid);\n\t\tbool _auth = ksu_manager_uid_authorized(_new_uid);\n\n\t\tif (__ratelimit(&_ksu_fd_rs))\n\t\t\tpr_info("SukiSU manager fd bridge: setresuid uid=%u auth=%d ret=%d\\n", _new_uid, _auth, retval);\n\t\t\/* No !retval guard: the OPLUS LSM chain returns a POSITIVE value\n\t\t * from security_task_fix_setuid for app specialization, neither <0\n\t\t * nor ==0, so the guarded install silently never ran although auth\n\t\t * was already 1. _auth alone is strict enough: only true for the\n\t\t * crowned manager uid. *\/\n\t\tif (unlikely(_auth))\n\t\t\tksu_install_fd();\n\t}\n/
 ' "$sc"
 
 	grep -q 'SukiSU manager fd bridge' "$sc" \
