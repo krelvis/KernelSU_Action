@@ -656,6 +656,11 @@ s/long ksu_supercall_handle_ioctl\(const struct file \*filp, unsigned int cmd, v
 s/(    cmd\.features = KSU_FEATURE_MAX;\n    cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;)/$1\n    pr_info("ksu GET_INFO TRACE: pid=%d uid=%d version=%u flags=0x%x is_manager=%d appid=%u\\n", current->pid, current_uid().val, cmd.version, cmd.flags, is_manager(), ksu_get_manager_appid());/
 ' "$dc"
 
+	# do_get_info: confirm the verdict actually reached the user buffer
+	perl -0pi -e '
+s/    if \(copy_to_user\(arg, &cmd, sizeof\(cmd\)\)\) \{\n        pr_err\("get_version: copy_to_user failed\\n"\);\n        return -EFAULT;\n    \}\n\n    return 0;/    if (copy_to_user(arg, \&cmd, sizeof(cmd))) {\n        pr_err("get_version: copy_to_user failed\\n");\n        return -EFAULT;\n    }\n    pr_info("ksu GET_INFO DONE: pid=%d verdict delivered\\n", current->pid);\n\n    return 0;/
+' "$dc"
+
 	grep -q 'ksu GET_INFO TRACE' "$dc" \
 		|| die "the GET_INFO trace edit did not land; dispatch.c no longer matches"
 
