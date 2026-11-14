@@ -572,6 +572,62 @@ s/(\tint ret = 0;\n)/$1\n\t\/* SukiSU supercall bridge (CONFIG_KSU_SUSFS builtin
 	endgroup
 }
 
+# ------------------------------------------------ SukiSU manager fd bridge
+#
+# Even with the reboot trick bridged (sukisu_supercall_reboot_apply), the
+# manager APP never calls it: it scans its own /proc/self/fd for the
+# [ksu_driver] anon inode and relies on the kernel to install that fd into
+# its process. Upstream does that from kernel/hook/setuid_hook.c
+# (ksu_handle_setresuid -> ksu_install_fd when the new uid is the crowned
+# manager), but the builtin branch this action pins for pre-GKI kernels does
+# NOT ship setuid_hook.c at all -- so the manager keeps reporting "no SukiSU
+# driver in kernel" even though the supercall fd machinery itself works.
+#
+# Fix: replicate the two-line core of upstream's setuid_hook inside
+# __sys_setresuid() in kernel/sys.c. zygote drops every app into its uid via
+# setresuid(3); when the new uid belongs to the crowned manager, install the
+# fd. Injected AFTER the security hook (so retval is final and new->euid is
+# set) but BEFORE commit_creds(), which the 4.19 code path returns directly.
+# gnu89: the declarations must stay at the head of their own block.
+sukisu_manager_fd_bridge_apply() {
+	local sc="${KERNEL_DIR}/kernel/sys.c"
+	group "Bridging SukiSU manager fd on setresuid (kernel 4.19)"
+
+	[ -f "$sc" ] || die "kernel/sys.c not found under ${KERNEL_DIR}"
+
+	if grep -q 'SukiSU manager fd bridge' "$sc"; then
+		info "kernel/sys.c already carries the manager fd bridge; nothing to do"
+		endgroup; return 0
+	fi
+
+	local ksud_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
+	grep -q 'ksu_manager_uid_authorized' "${ksud_dir}/kernel/manager/manager_identity.h" \
+		|| die "the KSU tree at ${ksud_dir} does not expose ksu_manager_uid_authorized; the bridge does not apply to this tree"
+	grep -q 'int ksu_install_fd(void)' "${ksud_dir}/kernel/supercall/supercall.h" \
+		|| die "the KSU tree at ${ksud_dir} does not export ksu_install_fd; the bridge does not apply to this tree"
+
+	grep -q 'security_task_fix_setuid(new, old, LSM_SETID_RES);' "$sc" \
+		|| die "kernel/sys.c does not match the 4.19 __sys_setresuid shape; the tree has drifted"
+
+	perl -0pi -e '
+s/\tretval = security_task_fix_setuid\(new, old, LSM_SETID_RES\);\n\tif \(retval < 0\)\n\t\tgoto error;\n/\tretval = security_task_fix_setuid(new, old, LSM_SETID_RES);\n\tif (retval < 0)\n\t\tgoto error;\n\n\t\/* SukiSU manager fd bridge: the builtin tree build with
+\t * CONFIG_KSU_SUSFS ships neither the reboot kprobe nor setuid_hook.c,
+\t * so the manager process never receives its [ksu_driver] fd and the
+\t * app reports "no SukiSU driver in kernel". zygote drops every app
+\t * into its uid via setresuid(3) -- install the fd right here when the
+\t * new uid is the crowned manager, exactly what upstream s
+\t * setuid_hook does. Runs before commit_creds so the fd lands in the
+\t * process that is about to become the manager. *\/\n\t{\n\t\textern bool ksu_manager_uid_authorized(uid_t uid);\n\t\textern int ksu_install_fd(void);\n\n\t\tif (unlikely(!retval && ksu_manager_uid_authorized(\n\t\t\t\t\t     from_kuid_munged(current_user_ns(), new->euid))))\n\t\t\tksu_install_fd();\n\t}\n/
+' "$sc"
+
+	grep -q 'SukiSU manager fd bridge' "$sc" \
+		|| die "the manager fd bridge edit did not land; kernel/sys.c no longer matches the 4.19 shape"
+
+	ok "kernel/sys.c: setresuid now installs the [ksu_driver] fd for the crowned manager"
+	summary "| SukiSU manager fd bridge | applied (setresuid -> ksu_install_fd) |"
+	endgroup
+}
+
 # ======================================================================== KPM
 
 # SukiSU-Ultra's Kernel Patch Module support needs a post-link step: the
@@ -625,6 +681,11 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 				# Wire the orphaned ksu_supercall_reboot_handler() into
 				# sys_reboot so the manager/ksud supercall fd can be installed.
 				sukisu_supercall_reboot_apply
+				# Give the crowned manager process its [ksu_driver] fd on the
+				# zygote setresuid, so the app can actually use the supercall
+				# surface (upstream ships this as setuid_hook.c; the builtin
+				# branch does not).
+				sukisu_manager_fd_bridge_apply
 			fi
 
 			if is_true "${ENABLE_SUSFS:-false}";      then susfs_apply;      fi
