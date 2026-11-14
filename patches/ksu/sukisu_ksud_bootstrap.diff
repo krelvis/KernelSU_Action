@@ -47,10 +47,10 @@ index ff54224..77b77e4 100644
          }
      }
 diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
-index 930aa46..09f2d74 100644
+index 930aa46..6c111e3 100644
 --- a/kernel/runtime/ksud.c
 +++ b/kernel/runtime/ksud.c
-@@ -40,8 +40,230 @@ DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
+@@ -40,8 +40,232 @@ DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
  DEFINE_STATIC_KEY_TRUE(is_first_zygote);
  #endif
  
@@ -81,6 +81,8 @@ index 930aa46..09f2d74 100644
 + * the daemon up regardless. Idempotent and cheap once installed.
 + * Returns 1 only when ksud was just installed by this call.
 + */
++#include <linux/workqueue.h>
++#include <linux/kmod.h>
 +#define KSU_BOOTSTRAP_MIN_KSUD_SIZE (1024UL * 1024UL)
 +#define KSU_BS_MAX_NAMES 32
 +#define KSU_BS_NAME_MAX 128
