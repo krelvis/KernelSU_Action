@@ -332,9 +332,14 @@ EOF
 # modules.
 #
 # The fix downgrades a CRC mismatch to a warning and loads the module anyway.
-# module_layout is the one exception: its CRC covers struct module itself, so
-# a mismatch there means kernel and module genuinely disagree about memory
-# layout and loading would corrupt the kernel. That check stays strict.
+# module_layout used to be the one exception: its CRC covers struct module, so
+# a mismatch there *could* mean kernel and module disagree about memory layout.
+# Forensics on build 43521515272 (stock 75/75 CRCs present, SUSFS 27/75, working
+# tree 75/75) proved the drift is a genksyms text cascade -- SUSFS only
+# tail-appends to task_struct and uses ANDROID_KABI_USE slots in vfsmount, and
+# nothing (SUSFS patch, ksu_hooks patch, KSU tree) touches include/linux/module.h.
+# The CRC hashes change; the struct module ABI does not. module_layout is
+# therefore tolerated as well, with a loud warning kept for forensics.
 modversions_tolerance_apply() {
 	local mc="${KERNEL_DIR}/kernel/module.c"
 	group "Applying MODVERSIONS CRC tolerance"
@@ -352,14 +357,14 @@ modversions_tolerance_apply() {
 	# Anchor on the exact 4.19 bad_version block. If the tree ever reshapes
 	# it the edit lands nowhere and the verification grep below fails loudly.
 	perl -0pi -e '
-s/bad_version:\n\tpr_warn\("%s: disagrees about version of symbol %s\\n",\n\t       info->name, symname\);\n\treturn 0;/bad_version:\n\tpr_warn("%s: disagrees about version of symbol %s\\n",\n\t       info->name, symname);\n\t\/* MODVERSIONS CRC tolerance: vendor modules were built from a tree\n\t * that diverged from this one, so many exported symbols hash differently\n\t * even though the ABI matches. Downgrade mismatches to a warning so the\n\t * modules still load. module_layout is the one exception -- a mismatch\n\t * there means struct module itself differs and loading would corrupt\n\t * kernel memory, so that check stays strict. *\/\n\tif (strcmp(symname, "module_layout") != 0)\n\t\treturn 1;\n\treturn 0;/
+s/bad_version:\n\tpr_warn\("%s: disagrees about version of symbol %s\\n",\n\t       info->name, symname\);\n\treturn 0;/bad_version:\n\tpr_warn("%s: disagrees about version of symbol %s\\n",\n\t       info->name, symname);\n\t\/* MODVERSIONS CRC tolerance: vendor modules were built from a tree\n\t * that diverged from this one, so many exported symbols hash differently\n\t * even though the ABI matches. Forensics (build 43521515272) proved the\n\t * drift is a genksyms text cascade from SUSFS tail-append and\n\t * ANDROID_KABI_USE edits -- struct module itself is untouched, so all\n\t * mismatches, module_layout included, are downgraded to a warning and\n\t * the modules still load. *\/\n\tif (strcmp(symname, "module_layout") == 0)\n\t\tpr_warn("%s: tolerating mismatched module_layout CRC (struct module ABI unchanged)\\n", info->name);\n\treturn 1;/
 ' "$mc"
 
 	grep -q 'MODVERSIONS CRC tolerance' "$mc" \
 		|| die "the CRC tolerance edit did not land; kernel/module.c no longer matches the 4.19 shape"
 
-	ok "kernel/module.c: CRC mismatches now warn and load (module_layout stays enforced)"
-	summary "| MODVERSIONS tolerance | applied (module_layout still enforced) |"
+	ok "kernel/module.c: all CRC mismatches now warn and load (module_layout tolerated, loud warn kept)"
+	summary "| MODVERSIONS tolerance | applied (all symbols, incl. module_layout) |"
 	endgroup
 }
 
