@@ -651,6 +651,15 @@ sukisu_ioctl_debug_apply() {
 s/long ksu_supercall_handle_ioctl\(const struct file \*filp, unsigned int cmd, void __user \*argp\)\n\{\n    int i;/long ksu_supercall_handle_ioctl(const struct file *filp, unsigned int cmd, void __user *argp)\n{\n    int i;\n\n    pr_info("ksu ioctl TRACE: pid=%d uid=%d cmd=0x%08x\\n", current->pid, current_uid().val, cmd);/
 ' "$dc"
 
+	# do_get_info: log the exact verdict handed to the manager app
+	perl -0pi -e '
+s/(    cmd\.features = KSU_FEATURE_MAX;\n    cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;)/$1\n    pr_info("ksu GET_INFO TRACE: pid=%d uid=%d version=%u flags=0x%x is_manager=%d appid=%u\\n", current->pid, current_uid().val, cmd.version, cmd.flags, is_manager(), ksu_get_manager_appid());/
+' "$dc"
+
+	grep -q 'ksu GET_INFO TRACE' "$dc" \
+		|| die "the GET_INFO trace edit did not land; dispatch.c no longer matches"
+' "$dc"
+
 	grep -q 'ksu ioctl TRACE' "$dc" \
 		|| die "the ioctl trace edit did not land; dispatch.c no longer matches"
 
