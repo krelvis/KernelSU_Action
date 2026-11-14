@@ -1412,7 +1412,7 @@ diff --git a/fs/statfs.c b/fs/statfs.c
  static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
  {
  	int retval;
-@@ -67,10 +73,48 @@ static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
+@@ -67,10 +73,50 @@ static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
  	return retval;
  }
  
@@ -1454,7 +1454,9 @@ diff --git a/fs/statfs.c b/fs/statfs.c
 +			error = statfs_by_dentry_wrapper_ref(path->dentry, buf);
 +			if (!error)
 +				buf->f_flags = calculate_f_flags_wrapper_ref(path->mnt);
-+			return error;
++						if (!error)
++				susfs_sus_kstat_spoof_vfs_statfs(s_inode, buf, &is_fuse);
++return error;
 +		}
 +	}
 +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
@@ -1464,7 +1466,20 @@ diff --git a/fs/statfs.c b/fs/statfs.c
 diff --git a/fs/super.c b/fs/super.c
 --- a/fs/super.c
 +++ b/fs/super.c
-@@ -1019,18 +1019,31 @@ int get_anon_bdev(dev_t *p)
+@@ -1011,6 +1011,12 @@ static DEFINE_IDA(unnamed_dev_ida);
+  * Return: 0 on success, -EMFILE if there are no anonymous bdevs left
+  * or -ENOMEM if memory allocation failed.
+  */
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++extern struct static_key_false susfs_is_sdcard_android_data_not_decrypted;
++extern __attribute__((cold)) bool susfs_is_current_ksu_domain(void);
++#endif // #ifdef CONFIG_KSU_SUSFS
++
+ int get_anon_bdev(dev_t *p)
+ {
+ 	int dev;
+@@ -1019,14 +1025,22 @@ int get_anon_bdev(dev_t *p)
  	 * Many userspace utilities consider an FSID of 0 invalid.
  	 * Always return at least 1 from get_anon_bdev.
  	 */
@@ -1495,15 +1510,37 @@ diff --git a/fs/super.c b/fs/super.c
  	return 0;
  }
  EXPORT_SYMBOL(get_anon_bdev);
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -24,6 +24,10 @@
+ #include <linux/filter.h>
+ #include <linux/ftrace.h>
+ #include <linux/compiler.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++extern __attribute__((cold)) bool susfs_starts_with(const char *str, const char *prefix);
++#endif
  
-+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-+extern struct static_key_false susfs_is_sdcard_android_data_not_decrypted;
-+extern __attribute__((cold)) bool susfs_is_current_ksu_domain(void);
-+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-+
- void free_anon_bdev(dev_t dev)
- {
- 	ida_free(&unnamed_dev_ida, MINOR(dev));
+ /*
+  * These will be re-linked against their real values
+@@ -656,9 +660,15 @@ static int s_show(struct seq_file *m, void *p)
+ 					tolower(iter->type);
+ 		seq_printf(m, "%px %c %s\t[%s]\n", value,
+ 			   type, iter->name, iter->module_name);
+-	} else
++	} else {
++#ifdef CONFIG_KSU_SUSFS
++		if (susfs_starts_with(iter->name, "ksu_") ||
++		    susfs_starts_with(iter->name, "susfs_"))
++			iter->name = "";
++#endif
+ 		seq_printf(m, "%px %c %s\n", value,
+ 			   iter->type, iter->name);
++	}
+ 	return 0;
+ }
+ 
 diff --git a/kernel/sys.c b/kernel/sys.c
 --- a/kernel/sys.c
 +++ b/kernel/sys.c
@@ -1577,7 +1614,17 @@ diff --git a/kernel/sys.c b/kernel/sys.c
 diff --git a/mm/memory.c b/mm/memory.c
 --- a/mm/memory.c
 +++ b/mm/memory.c
-@@ -5178,6 +5178,22 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
+@@ -59,6 +59,9 @@
+ #include <linux/pfn_t.h>
+ #include <linux/writeback.h>
+ #include <linux/memcontrol.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
+ #include <linux/mmu_notifier.h>
+ #include <linux/swapops.h>
+ #include <linux/elf.h>
+@@ -5178,6 +5181,22 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
  		void *maddr;
  		struct page *page = NULL;
  
@@ -1600,3 +1647,37 @@ diff --git a/mm/memory.c b/mm/memory.c
  		ret = get_user_pages_remote(tsk, mm, addr, 1,
  				gup_flags, &page, &vma, NULL);
  		if (ret <= 0) {
+diff --git a/security/selinux/avc.c b/security/selinux/avc.c
+--- a/security/selinux/avc.c
++++ b/security/selinux/avc.c
+@@ -32,6 +32,12 @@
+ #include <net/ipv6.h>
+ #include "avc.h"
+ #include "avc_ss.h"
++#ifdef CONFIG_KSU_SUSFS
++extern u32 susfs_ksu_sid;
++extern u32 susfs_priv_app_sid;
++extern struct static_key_false susfs_is_avc_log_spoofing_enabled;
++#endif // #ifdef CONFIG_KSU_SUSFS
++
+ #include "classmap.h"
+ #ifdef OPLUS_FEATURE_SELINUX_CONTROL_LOG
+ #include <soc/oplus/system/proc.h>
+@@ -190,6 +196,17 @@ static void avc_dump_query(struct audit_buffer *ab, struct selinux_state *state,
+ 	}
+ 
+ 	rc = security_sid_to_context(state, tsid, &scontext, &scontext_len);
++#ifdef CONFIG_KSU_SUSFS
++	if (static_branch_likely(&susfs_is_avc_log_spoofing_enabled) &&
++	    tsid == susfs_ksu_sid) {
++		if (rc)
++			audit_log_format(ab, " tsid=%d", susfs_priv_app_sid);
++		else {
++			audit_log_format(ab, " tcontext=%s", "u:r:priv_app:s0:c512,c768");
++			kfree(scontext);
++		}
++	} else
++#endif // #ifdef CONFIG_KSU_SUSFS
+ 	if (rc)
+ 		audit_log_format(ab, " tsid=%d", tsid);
+ 	else {
