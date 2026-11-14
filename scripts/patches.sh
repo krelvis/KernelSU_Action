@@ -658,7 +658,6 @@ s/(    cmd\.features = KSU_FEATURE_MAX;\n    cmd\.uapi_version = KERNEL_SU_UAPI_
 
 	grep -q 'ksu GET_INFO TRACE' "$dc" \
 		|| die "the GET_INFO trace edit did not land; dispatch.c no longer matches"
-' "$dc"
 
 	grep -q 'ksu ioctl TRACE' "$dc" \
 		|| die "the ioctl trace edit did not land; dispatch.c no longer matches"
