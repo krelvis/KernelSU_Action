@@ -517,6 +517,61 @@ sucompat_userptr_compat_apply() {
 	endgroup
 }
 
+# ================================================= SukiSU supercall bridge
+#
+# The SukiSU-Ultra builtin tree (CONFIG_KSU_SUSFS=y) defines
+# ksu_supercall_reboot_handler() -- the callback that installs the
+# [ksu_driver] anon fd the manager and ksud need for their ioctl
+# supercalls -- but ksu_supercalls_init() in that build NEVER registers the
+# reboot kprobe (that only happens in the non-SUSFS #else via a source-level
+# ksu_handle_sys_reboot() injection, and the newer trees register the probe
+# themselves). On 4.19 the hook patch repo ships no sys_reboot injection
+# either, so the handler is orphan code: reboot(0xDEADBEEF, 0xCAFEBABE)
+# returns -EINVAL, no fd is ever installed, and the manager reports "no
+# SukiSU driver in kernel" even though every other KSU feature works.
+#
+# Fix: inject the call in SYSCALL_DEFINE4(reboot) in kernel/reboot.c, AFTER
+# the local declarations (gnu89 forbids statements before them) but BEFORE
+# the CAP_SYS_BOOT check -- exactly where the upstream kprobe's pre_handler
+# would fire, and where non-root callers (the manager) can still reach it.
+# Real reboots use LINUX_REBOOT_MAGIC1/2 and can never match the trick pair.
+sukisu_supercall_reboot_apply() {
+	local rc="${KERNEL_DIR}/kernel/reboot.c"
+	group "Bridging SukiSU supercall reboot trick (kernel 4.19)"
+
+	[ -f "$rc" ] || die "kernel/reboot.c not found under ${KERNEL_DIR}"
+
+	if grep -q 'ksu_supercall_reboot_handler' "$rc"; then
+		info "kernel/reboot.c already carries the supercall bridge; nothing to do"
+		endgroup; return 0
+	fi
+
+	local ksud_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
+	grep -q 'ksu_supercall_reboot_handler' "${ksud_dir}/kernel/supercall/supercall.c" \
+		|| die "the KSU tree at ${ksud_dir} does not define ksu_supercall_reboot_handler; the bridge does not apply to this tree"
+
+	grep -q 'SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,' "$rc" \
+		|| die "kernel/reboot.c does not match the 4.19 SYSCALL_DEFINE4(reboot) shape; the tree has drifted"
+
+	perl -0pi -e '
+s/(\tint ret = 0;\n)/$1\n\t\/* SukiSU supercall bridge (CONFIG_KSU_SUSFS builtin build): the tree
+\t * defines ksu_supercall_reboot_handler() but never registers the reboot
+\t * kprobe on this kernel, so the [ksu_driver] fd that the manager and
+\t * ksud need for their ioctl supercalls can never be installed. Hook the
+\t * reboot(2) magic trick here (0xDEADBEEF\/0xCAFEBABE), after the local
+\t * declarations (gnu89) but before the CAP_SYS_BOOT check -- exactly
+\t * where the upstream kprobe would fire. Real reboots use
+\t * LINUX_REBOOT_MAGIC1\/2 and never match. *\/\n\tif (unlikely((unsigned int)magic1 == 0xDEADBEEFU &&\n\t\t     (unsigned int)magic2 == 0xCAFEBABEU)) {\n\t\textern int ksu_supercall_reboot_handler(void __user **arg);\n\t\tksu_supercall_reboot_handler((void __user **)&arg);\n\t}\n/
+' "$rc"
+
+	grep -q 'ksu_supercall_reboot_handler' "$rc" \
+		|| die "the supercall bridge edit did not land; kernel/reboot.c no longer matches the 4.19 shape"
+
+	ok "kernel/reboot.c: reboot(0xDEADBEEF, 0xCAFEBABE) now installs the [ksu_driver] fd"
+	summary "| SukiSU supercall bridge | applied (sys_reboot magic trick) |"
+	endgroup
+}
+
 # ======================================================================== KPM
 
 # SukiSU-Ultra's Kernel Patch Module support needs a post-link step: the
@@ -567,6 +622,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 				# -guarding: only fires when the struct-filename signature
 				# (SUSFS variant) is present in the KSU tree.
 				sucompat_userptr_compat_apply
+				# Wire the orphaned ksu_supercall_reboot_handler() into
+				# sys_reboot so the manager/ksud supercall fd can be installed.
+				sukisu_supercall_reboot_apply
 			fi
 
 			if is_true "${ENABLE_SUSFS:-false}";      then susfs_apply;      fi
@@ -577,6 +635,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			modversions_tolerance) modversions_tolerance_apply ;;
 			camx_kmd)              camx_kmd_apply ;;
 			sucompat_compat)       sucompat_userptr_compat_apply ;;
+			supercall_reboot)      sukisu_supercall_reboot_apply ;;
 		*) die "unknown patch step '$1'" ;;
 	esac
 fi
