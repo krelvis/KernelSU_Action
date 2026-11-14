@@ -1,0 +1,83 @@
+diff --git "a/kernel/runtime/ksud.c" "b/kernel/runtime/ksud.c"
+index 930aa46..9812e5b 100644
+--- "a/kernel/runtime/ksud.c"
++++ "b/kernel/runtime/ksud.c"
+@@ -40,6 +40,69 @@ DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
+ DEFINE_STATIC_KEY_TRUE(is_first_zygote);
+ #endif
+ 
++/*
++ * KSUD bootstrap: copy the ramdisk's /ksud into /data/adb/ksud so that a
++ * fresh device (factory reset / first flash of the clean boot) reaches root
++ * without ever needing an external root provider. on_post_fs_data() runs
++ * from the first-zygote exec hook, i.e. after /data is mounted and
++ * setup_ksu_cred() has prepared the ksu cred (uid 0, ksu SELinux domain,
++ * "allow ksu ALL ALL ALL" injected by apply_kernelsu_rules). No-op when
++ * /ksud is absent or ksud is already installed.
++ */
++static void ksu_bootstrap_install_ksud(void)
++{
++    const struct cred *old_cred;
++    struct file *src, *dst;
++    struct path kpath;
++    char *buf;
++    ssize_t n;
++    loff_t spos = 0, dpos = 0;
++
++    if (!ksu_cred)
++        return;
++
++    old_cred = override_creds(ksu_cred);
++
++    /* Already installed by an earlier boot or an earlier call. */
++    if (!kern_path(KSUD_PATH, 0, &kpath)) {
++        path_put(&kpath);
++        goto out_revert;
++    }
++
++    src = filp_open("/ksud", O_RDONLY, 0);
++    if (IS_ERR(src)) {
++        pr_info("ksud bootstrap: no /ksud in ramdisk, skipping\n");
++        goto out_revert;
++    }
++
++    buf = kvmalloc(PAGE_SIZE, GFP_KERNEL);
++    if (!buf) {
++        filp_close(src, NULL);
++        goto out_revert;
++    }
++
++    dst = filp_open(KSUD_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0755);
++    if (IS_ERR(dst)) {
++        pr_err("ksud bootstrap: create " KSUD_PATH " failed: %ld\n",
++            PTR_ERR(dst));
++        kvfree(buf);
++        filp_close(src, NULL);
++        goto out_revert;
++    }
++
++    while ((n = kernel_read(src, buf, PAGE_SIZE, &spos)) > 0)
++        kernel_write(dst, buf, n, &dpos);
++
++    kvfree(buf);
++    filp_close(dst, NULL);
++    filp_close(src, NULL);
++    pr_info("ksud bootstrap: installed " KSUD_PATH " from ramdisk (%lld bytes)\n",
++        (long long)dpos);
++
++out_revert:
++    revert_creds(old_cred);
++}
++
+ void on_post_fs_data(void)
+ {
+     static bool done = false;
+@@ -50,6 +113,8 @@ void on_post_fs_data(void)
+     done = true;
+     pr_info("on_post_fs_data!\n");
+ 
++    ksu_bootstrap_install_ksud();
++
+     ksu_load_allow_list();
+     ksu_dynamic_manager_load();
+     ksu_observer_init();

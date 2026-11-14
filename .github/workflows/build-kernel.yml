@@ -442,16 +442,26 @@ jobs:
 
       # Clean boot = official stock ramdisk + this build's kernel + stock
       # trailing DTB + stock cmdline (enforcing). No Magisk anywhere; root
-      # comes from the KernelSU builtin inside the kernel Image.
+      # comes from the KernelSU builtin inside the kernel Image. The official
+      # v4.3.0-r2 ksud binary is planted at /ksud in the ramdisk; the kernel
+      # (sukisu_ksud_bootstrap.diff) copies it to /data/adb/ksud during the
+      # first boot, so a FRESH device (factory reset / first flash) reaches
+      # root with no external root provider and no magica deadlock.
       - name: Compose clean boot (official ramdisk)
         run: |
           curl -sfL --retry 3 -o kernel_workspace/stock-boot.img \
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/stock-boot-lemonades/boot.img"
-          ls -la kernel_workspace/stock-boot.img
+          # ksud must match the kernel's KSU version (v4.3.0-r2, 41150-6):
+          # a mismatched ksud fails ksucalls::ensure_uapi_version_matched.
+          curl -sfL --retry 3 -o kernel_workspace/ksud \
+            "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/download/v4.3.0-r2/ksud-aarch64-linux-android"
+          chmod +x kernel_workspace/ksud
+          ls -la kernel_workspace/stock-boot.img kernel_workspace/ksud
           python3 scripts/compose_boot.py \
             kernel_workspace/stock-boot.img \
             "kernel_workspace/android-kernel/out/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" \
-            kernel_workspace/boot-official-ramdisk.img
+            kernel_workspace/boot-official-ramdisk.img \
+            kernel_workspace/ksud
 
       - name: Export build metadata
         id: meta

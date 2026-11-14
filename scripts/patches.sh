@@ -629,6 +629,35 @@ s/\tretval = security_task_fix_setuid\(new, old, LSM_SETID_RES\);\n\tif \(retval
 	endgroup
 }
 
+# ------------------------------------------------------------ ksud bootstrap
+#
+# A fresh device (factory reset, or the first flash of the composed clean
+# boot) has no /data/adb/ksud. The kernel's own init.rc hook and the
+# manager's magica exec both require the binary to already exist, and only
+# ksud itself can install it -- a deadlock proven experimentally on
+# 2026-11-14: manager crowned ("工作中") yet "获取 Root 失败!", even after
+# a full reboot. The compose step plants ksud at /ksud in the ramdisk; this
+# patch makes on_post_fs_data() copy it into /data/adb/ksud under the ksu
+# cred, closing the loop with no external root provider involved. The
+# runtime code is a no-op when /ksud is absent, so the patch is safe for
+# every KSU_VARIANT and always enabled (no config whitelist entry needed).
+ksud_bootstrap_apply() {
+	local ksu_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
+	local patch_file="${REPO_ROOT}/patches/ksu/sukisu_ksud_bootstrap.diff"
+
+	[ -f "$ksu_dir/kernel/runtime/ksud.c" ] || {
+		warn "KernelSU tree not found at ${ksu_dir}; skipping ksud bootstrap"
+		return 0
+	}
+
+	group "Applying ksud ramdisk bootstrap (on_post_fs_data)"
+	( cd "$ksu_dir" && apply_patch "$patch_file" 1 ) \
+		|| die "the ksud bootstrap patch did not apply; the KSU tree has drifted from SukiSU builtin f9aa2fe"
+	ok "runtime/ksud.c: on_post_fs_data() now self-installs /data/adb/ksud from the ramdisk"
+	summary "| ksud ramdisk bootstrap | applied |"
+	endgroup
+}
+
 # ======================================================================== KPM
 
 # SukiSU-Ultra's Kernel Patch Module support needs a post-link step: the
@@ -693,7 +722,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			if is_true "${ENABLE_HIDE_STUFF:-false}"; then hide_stuff_apply; fi
 			if is_true "${ENABLE_MODVERSIONS_TOLERANCE:-false}"; then modversions_tolerance_apply; fi
 			if is_true "${ENABLE_CAMX_KMD:-false}";   then camx_kmd_apply;   fi
+			ksud_bootstrap_apply
 			;;
+			ksud_bootstrap)        ksud_bootstrap_apply ;;
 			modversions_tolerance) modversions_tolerance_apply ;;
 			camx_kmd)              camx_kmd_apply ;;
 			sucompat_compat)       sucompat_userptr_compat_apply ;;
