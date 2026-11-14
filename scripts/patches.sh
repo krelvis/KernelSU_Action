@@ -629,6 +629,39 @@ s/\tretval = security_task_fix_setuid\(new, old, LSM_SETID_RES\);\n\tif \(retval
 	endgroup
 }
 
+# ------------------------------------------------ SukiSU ioctl debug trace
+#
+# TEMPORARY forensics: the manager process holds its [ksu_driver] fd, the
+# uapi headers on both sides match, yet the app still reports "no SukiSU
+# driver in kernel" without a single ksu ioctl warning in dmesg. Log every
+# dispatched ioctl command (unlimited) so the next boot shows whether the
+# manager's ioctl reaches the kernel at all. Remove once proven.
+sukisu_ioctl_debug_apply() {
+	local dc="${KERNEL_DIR}/KernelSU/kernel/supercall/dispatch.c"
+	group "Adding SukiSU ioctl dispatch trace (temporary debug)"
+
+	[ -f "$dc" ] || die "KSU dispatch.c not found at ${dc}"
+
+	if grep -q 'ksu ioctl TRACE' "$dc"; then
+		info "ioctl trace already present; nothing to do"
+		endgroup; return 0
+	fi
+
+	perl -0pi -e '
+s/long ksu_supercall_handle_ioctl\(const struct file \*filp, unsigned int cmd, void __user \*argp\)\n\{\n    int i;/long ksu_supercall_handle_ioctl(const struct file *filp, unsigned int cmd, void __user *argp)\n{\n    int i;\n\n    pr_info("ksu ioctl TRACE: pid=%d uid=%d cmd=0x%08x\\n", current->pid, current_uid().val, cmd);/
+' "$dc"
+
+	grep -q 'ksu ioctl TRACE' "$dc" \
+		|| die "the ioctl trace edit did not land; dispatch.c no longer matches"
+
+	# drop the ratelimit on the two pr_warn paths so nothing gets swallowed
+	perl -0pi -e 's/pr_warn_ratelimited\("ksu ioctl: /pr_warn("ksu ioctl: /g' "$dc"
+
+	ok "dispatch.c: every ioctl is now traced; warnings are unlimited"
+	summary "| SukiSU ioctl debug trace | applied (temporary) |"
+	endgroup
+}
+
 # ======================================================================== KPM
 
 # SukiSU-Ultra's Kernel Patch Module support needs a post-link step: the
@@ -687,6 +720,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 				# surface (upstream ships this as setuid_hook.c; the builtin
 				# branch does not).
 				sukisu_manager_fd_bridge_apply
+				sukisu_ioctl_debug_apply
 			fi
 
 			if is_true "${ENABLE_SUSFS:-false}";      then susfs_apply;      fi
