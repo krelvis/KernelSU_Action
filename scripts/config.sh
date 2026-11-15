@@ -67,6 +67,7 @@ declare -A DEFAULTS=(
 	[ENABLE_MODVERSIONS_TOLERANCE]="false"
 	[ENABLE_CAMX_KMD]="false"
 	[ENABLE_SELINUX_HIDE_419]="false"
+	[ENABLE_SELINUX_HIDE_419_KERNEL]="false"
 
 	# Kconfig tweaks
 	[ADD_KPROBES_CONFIG]="false"

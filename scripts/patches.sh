@@ -784,9 +784,17 @@ selinux_hide_419_apply() {
 	group "Applying selinux_hide 4.19 port (KSU tree + kernel security/selinux)"
 	( cd "$ksu_dir" && apply_patch "$ksu_patch" 1 ) \
 		|| die "the selinux_hide 4.19 KSU patch did not apply; the KSU tree has drifted from SukiSU builtin f9aa2fe"
-	( cd "${KERNEL_DIR}/security" && apply_patch "$kern_patch" 1 ) \
-		|| die "the selinux_hide 4.19 kernel patch did not apply against security/selinux"
-	ok "selinux_hide 4.19: pristine snapshot + selinuxfs/hooks readers lie wired"
+	# Bisect knob: the kernel-side selinuxfs/hooks diff can be skipped with
+	# ENABLE_SELINUX_HIDE_419_KERNEL=false (default). When skipped, the KSU-side
+	# feature stays compiled in but the manager toggle cannot take effect
+	# (readers are never rerouted). Used to isolate a silent boot hang.
+	if is_true "${ENABLE_SELINUX_HIDE_419_KERNEL:-false}"; then
+		( cd "${KERNEL_DIR}/security" && apply_patch "$kern_patch" 1 ) \
+			|| die "the selinux_hide 4.19 kernel patch did not apply against security/selinux"
+		ok "selinux_hide 4.19: pristine snapshot + selinuxfs/hooks readers lie wired"
+	else
+		warn "selinux_hide 4.19: kernel-side selinuxfs/hooks patch skipped (ENABLE_SELINUX_HIDE_419_KERNEL=false)"
+	fi
 	summary "| selinux_hide 4.19 | applied |"
 	endgroup
 }
