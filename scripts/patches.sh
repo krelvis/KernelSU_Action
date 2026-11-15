@@ -698,6 +698,41 @@ ksud_bootstrap_apply() {
 	endgroup
 }
 
+# ------------------------------------------------------- avc spoof feature
+#
+# The manager's "AVC log spoofing" toggle talks to kernel feature ID 10003
+# (KSU_FEATURE_AVC_SPOOF). SukiSU builtin f9aa2fe predates that ID: its
+# enum ksu_feature_id tops out at KSU_FEATURE_MAX = 17, feature.c rejects
+# any registration above MAX, and the manager greys the toggle out with
+# "内核不支持此特性" -- even though the underlying susfs channel
+# (CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING -> susfs_set_avc_log_spoofing()) is
+# fully functional. This patch adds the ID (mirroring the SukiSU full tree,
+# where 10003 sits before KSU_FEATURE_MAX so MAX becomes 10004 -- the
+# feature.c arrays are sized by MAX and tolerate it), a handler that flips
+# the susfs static key directly, and the init call, all #ifdef'd on
+# CONFIG_KSU_SUSFS so the tree stays no-op without SUSFS.
+avc_spoof_feature_apply() {
+	local ksu_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
+	local patch_file="${REPO_ROOT}/patches/ksu/sukisu_avc_spoof_feature.diff"
+
+	[ -f "$ksu_dir/kernel/ksu_main.c" ] || {
+		warn "KernelSU tree not found at ${ksu_dir}; skipping avc spoof feature"
+		return 0
+	}
+
+	if grep -qF 'KSU_FEATURE_AVC_SPOOF' "$ksu_dir/kernel/include/uapi/feature.h"; then
+		ok "avc spoof feature already present; skipping"
+		return 0
+	fi
+
+	group "Applying avc spoof feature bridge (manager toggle -> susfs static key)"
+	( cd "$ksu_dir" && apply_patch "$patch_file" 1 ) \
+		|| die "the avc spoof feature patch did not apply; the KSU tree has drifted from SukiSU builtin f9aa2fe"
+	ok "uapi/feature.h + feature/avc_spoof.c + ksu_main.c: feature ID 10003 wired to susfs_avc_log_spoofing"
+	summary "| avc spoof feature | applied |"
+	endgroup
+}
+
 # ======================================================================== KPM
 
 # SukiSU-Ultra's Kernel Patch Module support needs a post-link step: the
@@ -763,12 +798,14 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			if is_true "${ENABLE_MODVERSIONS_TOLERANCE:-false}"; then modversions_tolerance_apply; fi
 			if is_true "${ENABLE_CAMX_KMD:-false}";   then camx_kmd_apply;   fi
 			ksud_bootstrap_apply
+			if is_true "${ENABLE_SUSFS:-false}"; then avc_spoof_feature_apply; fi
 			;;
-			ksud_bootstrap)        ksud_bootstrap_apply ;;
-			modversions_tolerance) modversions_tolerance_apply ;;
-			camx_kmd)              camx_kmd_apply ;;
-			sucompat_compat)       sucompat_userptr_compat_apply ;;
-			supercall_reboot)      sukisu_supercall_reboot_apply ;;
+		ksud_bootstrap)        ksud_bootstrap_apply ;;
+		avc_spoof)             avc_spoof_feature_apply ;;
+		modversions_tolerance) modversions_tolerance_apply ;;
+		camx_kmd)              camx_kmd_apply ;;
+		sucompat_compat)       sucompat_userptr_compat_apply ;;
+		supercall_reboot)      sukisu_supercall_reboot_apply ;;
 		*) die "unknown patch step '$1'" ;;
 	esac
 fi

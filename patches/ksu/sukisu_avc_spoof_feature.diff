@@ -1,0 +1,91 @@
+diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
+--- a/kernel/include/uapi/feature.h
++++ b/kernel/include/uapi/feature.h
+@@ -17,6 +17,10 @@
+     KSU_FEATURE_MOUNT_HIDE = 16,
+ 
++#ifdef CONFIG_KSU_SUSFS
++    KSU_FEATURE_AVC_SPOOF = 10003,
++#endif
++
+     KSU_FEATURE_MAX
+ };
+ 
+ #endif
+diff --git a/kernel/feature/avc_spoof.c b/kernel/feature/avc_spoof.c
+new file mode 100644
+--- /dev/null
++++ b/kernel/feature/avc_spoof.c
+@@ -0,0 +1,32 @@
++/*
++ * Manager "AVC log spoofing" toggle bridge.
++ *
++ * The manager queries/sets kernel feature ID 10003 (KSU_FEATURE_AVC_SPOOF).
++ * SukiSU builtin f9aa2fe predates that feature ID, so the kernel reported
++ * NOT_SUPPORTED and the manager toggle stayed grey even though the underlying
++ * susfs command channel (CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING ->
++ * susfs_set_avc_log_spoofing()) is fully functional.
++ *
++ * This handler flips the susfs static key directly; get reads its live state,
++ * so a state applied via `ksud susfs enable-avc-log-spoofing` is reflected.
++ */
++#include <linux/printk.h>
++#include <linux/jump_label.h>
++
++extern struct static_key_false susfs_is_avc_log_spoofing_enabled;
++
++static int avc_spoof_feature_get(u64 *value)
++{
++    *value = static_key_enabled(&susfs_is_avc_log_spoofing_enabled.key) ? 1 : 0;
++    return 0;
++}
++
++static int avc_spoof_feature_set(u64 value)
++{
++    if (value) {
++        static_branch_enable(&susfs_is_avc_log_spoofing_enabled);
++        pr_info("avc_spoof: enabled\n");
++    } else {
++        static_branch_disable(&susfs_is_avc_log_spoofing_enabled);
++        pr_info("avc_spoof: disabled\n");
++    }
++    return 0;
++}
++
++static const struct ksu_feature_handler avc_spoof_handler = {
++    .feature_id = KSU_FEATURE_AVC_SPOOF,
++    .name = "avc_spoof",
++    .get_handler = avc_spoof_feature_get,
++    .set_handler = avc_spoof_feature_set,
++};
++
++void __init ksu_avc_spoof_init(void)
++{
++    if (ksu_register_feature_handler(&avc_spoof_handler)) {
++        pr_err("avc_spoof: failed to register feature handler\n");
++    }
++}
+diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
+--- a/kernel/ksu_main.c
++++ b/kernel/ksu_main.c
+@@ -128,5 +128,8 @@
+ #include "feature/shell_su_adb_only.c"
+ #include "feature/mount_hide.c"
++#ifdef CONFIG_KSU_SUSFS
++#include "feature/avc_spoof.c"
++#endif
+ #include "runtime/ksud.c"
+ 
+ #include "sulog/event.c"
+@@ -200,7 +200,11 @@
+ #endif
+ 
+     ksu_kernel_umount_init();
+ 
+ 	ksu_mount_hide_init();
++
++#ifdef CONFIG_KSU_SUSFS
++    ksu_avc_spoof_init();
++#endif
+ 
+     ksu_allowlist_init();
