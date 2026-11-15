@@ -564,14 +564,13 @@ diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
  
  #include "inotify/inotify.h"
  #include "fsnotify.h"
-@@ -21,16 +25,26 @@
+@@ -21,16 +25,25 @@
  
  #if defined(CONFIG_INOTIFY_USER) || defined(CONFIG_FANOTIFY)
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 +extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
 +extern void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *out_target_ino, dev_t *out_target_dev);
-+extern __attribute__((cold)) bool susfs_is_current_app_uid(void);
 +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 +#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 +extern __attribute__((cold)) bool susfs_is_current_proc_umounted(void);
@@ -593,7 +592,7 @@ diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
  		if (seq_has_overflowed(m))
  			break;
  	}
-@@ -72,7 +86,7 @@ static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
+@@ -72,7 +85,7 @@ static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
  
  #ifdef CONFIG_INOTIFY_USER
  
@@ -602,7 +601,7 @@ diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
  {
  	struct inotify_inode_mark *inode_mark;
  	struct inode *inode;
-@@ -83,13 +97,68 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
+@@ -83,13 +96,68 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
  	inode_mark = container_of(mark, struct inotify_inode_mark, fsn_mark);
  	inode = igrab(fsnotify_conn_inode(mark->connector));
  	if (inode) {
@@ -672,7 +671,7 @@ diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
  		seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:%x ",
  			   inode_mark->wd, inode->i_ino, inode->i_sb->s_dev,
  			   mask, mark->ignored_mask);
-@@ -108,7 +177,7 @@ void inotify_show_fdinfo(struct seq_file *m, struct file *f)
+@@ -108,7 +176,7 @@ void inotify_show_fdinfo(struct seq_file *m, struct file *f)
  
  #ifdef CONFIG_FANOTIFY
  
@@ -808,14 +807,13 @@ diff --git a/fs/proc/fd.c b/fs/proc/fd.c
 diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
 --- a/fs/proc/task_mmu.c
 +++ b/fs/proc/task_mmu.c
-@@ -7,6 +7,21 @@
+@@ -7,6 +7,20 @@
  #include <linux/seq_file.h>
  #include <linux/highmem.h>
  #include <linux/ptrace.h>
 +#ifdef CONFIG_KSU_SUSFS
 +#include <linux/susfs_def.h>
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-+extern __attribute__((cold)) bool susfs_is_current_app_uid(void);
 +extern __attribute__((cold)) bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse);
 +extern __attribute__((cold)) void susfs_sus_kstat_spoof_show_map_vma(struct inode *inode, dev_t *out_dev, unsigned long *out_ino);
 +#endif
@@ -830,7 +828,7 @@ diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
  #include <linux/slab.h>
  #include <linux/pagemap.h>
  #include <linux/mempolicy.h>
-@@ -366,6 +381,20 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
+@@ -366,6 +380,20 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
  		dev = inode->i_sb->s_dev;
  		ino = inode->i_ino;
  		pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
@@ -851,7 +849,7 @@ diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
  	}
  
  	start = vma->vm_start;
-@@ -844,6 +873,14 @@ static void __show_smap(struct seq_file *m, const struct mem_size_stats *mss)
+@@ -844,6 +872,14 @@ static void __show_smap(struct seq_file *m, const struct mem_size_stats *mss)
  
  static int show_smap(struct seq_file *m, void *v)
  {
@@ -866,7 +864,7 @@ diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
  	struct vm_area_struct *vma = v;
  	struct mem_size_stats mss;
  
-@@ -922,6 +959,11 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
+@@ -922,6 +958,11 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
  	hold_task_mempolicy(priv);
  
  	for (vma = priv->mm->mmap; vma; vma = vma->vm_next) {
@@ -1358,12 +1356,14 @@ diff --git a/fs/readdir.c b/fs/readdir.c
 diff --git a/fs/stat.c b/fs/stat.c
 --- a/fs/stat.c
 +++ b/fs/stat.c
-@@ -66,11 +66,36 @@ EXPORT_SYMBOL(generic_fillattr);
+@@ -66,11 +66,38 @@ EXPORT_SYMBOL(generic_fillattr);
   * filehandle lookup code, which uses only the inode number and returns no
   * attributes to any user.  Any other code probably wants vfs_getattr.
   */
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-+extern __attribute__((cold)) bool susfs_is_current_app_uid(void);
 +extern __attribute__((cold)) bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse);
 +extern __attribute__((cold)) void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat);
 +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
@@ -1398,12 +1398,14 @@ diff --git a/fs/stat.c b/fs/stat.c
 diff --git a/fs/statfs.c b/fs/statfs.c
 --- a/fs/statfs.c
 +++ b/fs/statfs.c
-@@ -50,6 +50,12 @@ static int calculate_f_flags(struct vfsmount *mnt)
+@@ -50,6 +50,14 @@ static int calculate_f_flags(struct vfsmount *mnt)
  		flags_by_sb(mnt->mnt_sb->s_flags);
  }
  
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-+extern __attribute__((cold)) bool susfs_is_current_app_uid(void);
 +extern __attribute__((cold)) bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse);
 +extern __attribute__((cold)) int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);
 +#endif
@@ -1411,20 +1413,22 @@ diff --git a/fs/statfs.c b/fs/statfs.c
  static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
  {
  	int retval;
-@@ -67,10 +73,50 @@ static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
+@@ -67,10 +75,52 @@ static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
  	return retval;
  }
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-+static int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf)
++int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf)
 +{
 +	return statfs_by_dentry(dentry, buf);
 +}
++EXPORT_SYMBOL(statfs_by_dentry_wrapper);
 +
-+static u32 calculate_f_flags_wrapper(struct vfsmount *mnt)
++u32 calculate_f_flags_wrapper(struct vfsmount *mnt)
 +{
 +	return calculate_f_flags(mnt);
 +}
++EXPORT_SYMBOL(calculate_f_flags_wrapper);
 +
 +int statfs_by_dentry_wrapper_ref(struct dentry *dentry, struct kstatfs *buf);
 +EXPORT_SYMBOL(statfs_by_dentry_wrapper_ref);

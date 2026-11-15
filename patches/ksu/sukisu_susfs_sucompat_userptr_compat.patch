@@ -71,6 +71,19 @@
 +}
 +
 +
++
++/*
++ * The 4.19 hooks patch injects a devpts hook in drivers/tty/pty.c guarded
++ * by CONFIG_KSU; the builtin tree only defines ksu_handle_devpts() in the
++ * non-SUSFS #else branch (marked dead code), so SUSFS builds have no
++ * definition and vmlinux fails to link. Provide the no-op here; it is only
++ * applied to trees with the struct-filename (SUSFS) signatures where the
++ * #else branch never compiles.
++ */
++int ksu_handle_devpts(struct inode *inode)
++{
++    return 0;
++}
  
  #ifdef CONFIG_KSU_SUSFS
  /*
