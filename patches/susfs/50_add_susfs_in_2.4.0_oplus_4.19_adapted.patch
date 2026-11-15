@@ -121,7 +121,7 @@ diff --git a/fs/exec.c b/fs/exec.c
  	if (retval < 0)
  		goto out;
  
-@@ -1930,11 +1942,27 @@
+@@ -1930,11 +1942,25 @@
  	return retval;
  }
  
@@ -142,9 +142,7 @@ diff --git a/fs/exec.c b/fs/exec.c
  			      int flags)
  {
 +#ifdef CONFIG_KSU_SUSFS
-+	if (unlikely(ksu_su_compat_enabled)) {
-+		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-+	}
++	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 +#endif // #ifdef CONFIG_KSU_SUSFS
  	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
  }
