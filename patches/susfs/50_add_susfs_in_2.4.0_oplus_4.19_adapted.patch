@@ -399,7 +399,7 @@ diff --git a/fs/namespace.c b/fs/namespace.c
  	new = copy_tree(old, old->mnt.mnt_root, copy_flags);
  	if (IS_ERR(new)) {
  		namespace_unlock();
-@@ -3526,3 +3601,151 @@ const struct proc_ns_operations mntns_operations = {
+@@ -3526,3 +3601,150 @@ const struct proc_ns_operations mntns_operations = {
  	.install	= mntns_install,
  	.owner		= mntns_owner,
  };
@@ -496,7 +496,6 @@ diff --git a/fs/namespace.c b/fs/namespace.c
 +		INIT_LIST_HEAD(&mnt->mnt_slave);
 +		INIT_HLIST_NODE(&mnt->mnt_mp_list);
 +		INIT_LIST_HEAD(&mnt->mnt_umounting);
-+		INIT_HLIST_HEAD(&mnt->mnt_stuck_children);
 +	}
 +	return mnt;
 +
