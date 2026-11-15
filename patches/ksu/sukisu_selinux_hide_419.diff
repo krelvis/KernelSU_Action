@@ -1279,7 +1279,7 @@ index 930aa46..f44bd31 100644
              cache_sid();
              setup_ksu_cred();
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index 6f73a74..bc1a627 100644
+index 6f73a74..6399450 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
 @@ -28,6 +28,8 @@ static void reset_avc_cache(u32 seqno)
@@ -1291,20 +1291,15 @@ index 6f73a74..bc1a627 100644
  #if defined(KSU_COMPAT_USE_SELINUX_STATE)
  static struct policydb *get_policydb(void)
  {
-@@ -158,6 +160,57 @@ void apply_kernelsu_rules(void)
+@@ -158,6 +160,52 @@ void apply_kernelsu_rules(void)
          pr_info("SELinux permissive or disabled, apply rules!\n");
      }
  
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+    // Capture the pristine policy snapshot once, BEFORE any rules are applied,
-+    // so selinux_hide can serve readers a view of the unmodified policy.
-+    // Lock/allocation order mirrors stock security_read_policy() EXACTLY:
-+    // estimate the size under a brief read lock, allocate OUTSIDE the lock
-+    // (vmalloc may sleep and we run in PID1's execve context via
-+    // ksu_handle_execveat_ksud -- allocating under a spinlock would be
-+    // scheduling-while-atomic), then take the lock again only for the
-+    // policydb_write(). The (sleepable) parse runs outside the lock too.
-+    if (!ksu_selinux_hide_backup_419) {
++    // BISECT ROUND 1: capture block disabled to isolate a silent hang at
++    // init second_stage (no panic record left in pstore -> deadlock/hang,
++    // not an oops). Re-enable once the guilty component is identified.
++    if (0) {
 +        rwlock_t *bklock = ksu_get_policy_rwlock();
 +        struct policydb *bkdb = get_policydb();
 +        void *bkdata = NULL;
@@ -1349,7 +1344,7 @@ index 6f73a74..bc1a627 100644
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
      mutex_lock(&selinux_state.policy_mutex);
  
-@@ -262,6 +315,14 @@ out_flush:
+@@ -262,6 +310,14 @@ out_flush:
  #ifdef CONFIG_KSU_SUSFS
      susfs_set_batch_sid();
  #endif
