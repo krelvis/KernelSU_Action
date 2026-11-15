@@ -43,7 +43,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1250,1147 @@ allow:
+@@ -1248,3 +1250,1151 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -58,6 +58,10 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +#include <ss/avtab.h>
 +#include <ss/constraint.h>
 +#include <ss/services.h>
++
++/* 4.19's symtab.h predates the symtab_search helper; mirror the newer
++ * definition on top of hashtab_search() (ss/hashtab.c, linked into vmlinux). */
++#define symtab_search(s, string) hashtab_search((s)->table, (string))
 +
 +/*
 + * On 4.19 there is no struct selinux_policy and no RCU hot-swap: KSU applies
