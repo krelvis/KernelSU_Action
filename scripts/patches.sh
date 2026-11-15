@@ -707,10 +707,17 @@ ksud_bootstrap_apply() {
 # "内核不支持此特性" -- even though the underlying susfs channel
 # (CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING -> susfs_set_avc_log_spoofing()) is
 # fully functional. This patch adds the ID (mirroring the SukiSU full tree,
-# where 10003 sits before KSU_FEATURE_MAX so MAX becomes 10004 -- the
-# feature.c arrays are sized by MAX and tolerate it), a handler that flips
-# the susfs static key directly, and the init call, all #ifdef'd on
+# where 10003 sits before KSU_FEATURE_MAX so MAX becomes 10004 -- feature.c
+# arrays are sized by MAX and tolerate it, but ksu_main.c is a unity build,
+# so extension.c's same-name forced_mask/forced_pending bitmaps must grow to
+# KSU_FEATURE_MAX too or the tentative definitions stop merging), a handler
+# that flips the susfs static key directly, and the init call, all #ifdef'd on
 # CONFIG_KSU_SUSFS so the tree stays no-op without SUSFS.
+#
+# NOTE: this diff is machine-generated (git diff --no-index against the
+# builtin f9aa2fe reference) and MUST stay that way -- a hand-edited rebuild
+# of it produced hunks GNU patch could not exact-match, silently falling back
+# to --fuzz=3 and corrupting ksu_main.c (run 43731009708).
 avc_spoof_feature_apply() {
 	local ksu_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
 	local patch_file="${REPO_ROOT}/patches/ksu/sukisu_avc_spoof_feature.diff"

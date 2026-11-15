@@ -1,22 +1,27 @@
-diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
---- a/kernel/include/uapi/feature.h
-+++ b/kernel/include/uapi/feature.h
-@@ -17,6 +17,10 @@
-     KSU_FEATURE_MOUNT_HIDE = 16,
+diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
+--- a/kernel/extension/extension.c
++++ b/kernel/extension/extension.c
+@@ -45,8 +45,13 @@ static const char *const extension_names[KSU_EXTENSION_MAX] = {
+  * successfully replays them.
+  */
+ static u64 extension_forced_values[KSU_EXTENSION_MAX];
+-static DECLARE_BITMAP(forced_mask, KSU_EXTENSION_MAX);
+-static DECLARE_BITMAP(forced_pending, KSU_EXTENSION_MAX);
++/* Size these by KSU_FEATURE_MAX, not KSU_EXTENSION_MAX: ksu_main.c is a
++ * unity build, so these tentative definitions must merge with the
++ * same-name bitmaps in policy/feature.c, whose size follows
++ * KSU_FEATURE_MAX (10004 once KSU_FEATURE_AVC_SPOOF lands). Bits are
++ * still indexed by extension id < KSU_EXTENSION_MAX. */
++static DECLARE_BITMAP(forced_mask, KSU_FEATURE_MAX);
++static DECLARE_BITMAP(forced_pending, KSU_FEATURE_MAX);
  
-+#ifdef CONFIG_KSU_SUSFS
-+    KSU_FEATURE_AVC_SPOOF = 10003,
-+#endif
-+
-     KSU_FEATURE_MAX
- };
- 
- #endif
+ /*
+  * Set to true at the end of ksu_extension_register_all() so that
 diff --git a/kernel/feature/avc_spoof.c b/kernel/feature/avc_spoof.c
 new file mode 100644
 --- /dev/null
 +++ b/kernel/feature/avc_spoof.c
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,48 @@
 +/*
 + * Manager "AVC log spoofing" toggle bridge.
 + *
@@ -65,10 +70,25 @@ new file mode 100644
 +        pr_err("avc_spoof: failed to register feature handler\n");
 +    }
 +}
+diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
+--- a/kernel/include/uapi/feature.h
++++ b/kernel/include/uapi/feature.h
+@@ -16,6 +16,10 @@ enum ksu_feature_id {
+      */
+     KSU_FEATURE_MOUNT_HIDE = 16,
+ 
++#ifdef CONFIG_KSU_SUSFS
++    KSU_FEATURE_AVC_SPOOF = 10003,
++#endif
++
+     KSU_FEATURE_MAX
+ };
+ 
 diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
 --- a/kernel/ksu_main.c
 +++ b/kernel/ksu_main.c
-@@ -128,5 +128,8 @@
+@@ -127,6 +127,9 @@
+ #endif
  #include "feature/shell_su_adb_only.c"
  #include "feature/mount_hide.c"
 +#ifdef CONFIG_KSU_SUSFS
@@ -77,15 +97,14 @@ diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
  #include "runtime/ksud.c"
  
  #include "sulog/event.c"
-@@ -200,7 +200,11 @@
- #endif
- 
-     ksu_kernel_umount_init();
+@@ -203,6 +206,10 @@ int __init kernelsu_init(void)
  
  	ksu_mount_hide_init();
-+
+ 
 +#ifdef CONFIG_KSU_SUSFS
 +    ksu_avc_spoof_init();
 +#endif
- 
++
      ksu_allowlist_init();
+ 
+     ksu_dynamic_manager_load();
