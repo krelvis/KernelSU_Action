@@ -1,15 +1,48 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -52,6 +52,8 @@ enum sel_inos {
+@@ -52,19 +52,6 @@ enum sel_inos {
      SEL_INO_NEXT, /* The next inode number to use */
  };
  
+-static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
+-                                               u32 *sid, u32 def_sid, gfp_t gfp_flags, u32 *orig_sid_p, int *orig_rc_p);
+-static int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
+-                                               u32 *scontext_len);
+-static int security_context_to_sid_live(const char *scontext, u32 scontext_len, u32 *sid);
+-static void security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
+-                                                 struct av_decision *avd);
+-static void (*security_dump_masked_av_fn)(struct policydb *policydb, struct context *scontext, struct context *tcontext,
+-                                          u16 tclass, u32 permissions, const char *reason) = NULL;
+-static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct context *scontext,
+-                                            struct context *tcontext, u16 tclass, struct av_decision *avd,
+-                                            struct extended_perms *xperms) = NULL;
+-
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+ #define ksu_avc_has_perm_compat(...) avc_has_perm(__VA_ARGS__)
+ #define ksu_security_bounded_transition_compat(...) security_bounded_transition(__VA_ARGS__)
+@@ -79,6 +66,21 @@ static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct co
+ #define ksu_task_security_struct cred_security_struct
+ #endif
+ 
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 +
- static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
-                                                u32 *sid, u32 def_sid, gfp_t gfp_flags, u32 *orig_sid_p, int *orig_rc_p);
- static int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
++static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
++                                               u32 *sid, u32 def_sid, gfp_t gfp_flags, u32 *orig_sid_p, int *orig_rc_p);
++static int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
++                                               u32 *scontext_len);
++static int security_context_to_sid_live(const char *scontext, u32 scontext_len, u32 *sid);
++static void security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
++                                                 struct av_decision *avd);
++static void (*security_dump_masked_av_fn)(struct policydb *policydb, struct context *scontext, struct context *tcontext,
++                                          u16 tclass, u32 permissions, const char *reason) = NULL;
++static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct context *scontext,
++                                            struct context *tcontext, u16 tclass, struct av_decision *avd,
++                                            struct extended_perms *xperms) = NULL;
++
+ ssize_t my_write_context(struct file *file, char *buf, size_t size)
+ {
+     char *canon = NULL;
 @@ -1248,3 +1250,1147 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
