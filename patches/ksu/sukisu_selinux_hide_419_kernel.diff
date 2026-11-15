@@ -1,0 +1,110 @@
+diff --git a/selinux/hooks.c b/selinux/hooks.c
+--- a/selinux/hooks.c
++++ b/selinux/hooks.c
+@@ -7043,7 +7043,27 @@ static int selinux_perf_event_write(struct perf_event *event)
+ }
+ #endif
+ 
++/* KernelSU: selinux_hide */
++#ifdef CONFIG_KSU
++extern bool ksu_selinux_hide_running;
++extern int my_setprocattr(const char *name, void *value, size_t size);
++
++static int handle_selinux_setprocattr(const char *name, void *value, size_t size)
++{
++	if (name && !strcmp(name, "current") && current_uid().val >= 10000 && ksu_selinux_hide_running)
++		return my_setprocattr(name, value, size);
++	return selinux_setprocattr(name, value, size);
++}
++#endif
++
+ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
++#ifdef CONFIG_KSU
++	/* KernelSU: selinux_hide -- route /proc/self/attr/current writes through
++	 * the pristine-policy validation when hiding is active */
++	LSM_HOOK_INIT(setprocattr, handle_selinux_setprocattr),
++#else
++	LSM_HOOK_INIT(setprocattr, selinux_setprocattr),
++#endif
+ 	LSM_HOOK_INIT(binder_set_context_mgr, selinux_binder_set_context_mgr),
+ 	LSM_HOOK_INIT(binder_transaction, selinux_binder_transaction),
+ 	LSM_HOOK_INIT(binder_transfer_binder, selinux_binder_transfer_binder),
+diff --git a/selinux/selinuxfs.c b/selinux/selinuxfs.c
+--- a/selinux/selinuxfs.c
++++ b/selinux/selinuxfs.c
+@@ -46,6 +46,17 @@
+ #include <soc/oplus/system/proc.h>
+ #endif /* OPLUS_FEATURE_SELINUX_CONTROL_LOG */
+ 
++/* KernelSU: selinux_hide */
++#ifdef CONFIG_KSU
++#include <linux/jump_label.h>
++extern bool ksu_selinux_hide_running;
++extern struct page *fake_status;
++extern struct static_key_false fake_status_initialize_key;
++extern void initialize_fake_status(void);
++extern ssize_t my_write_context(struct file *, char *, size_t);
++extern ssize_t my_write_access(struct file *, char *, size_t);
++#endif
++
+ enum sel_inos {
+ 	SEL_ROOT_INO = 2,
+ 	SEL_LOAD,	/* load policy */
+@@ -230,6 +241,17 @@ static int sel_open_handle_status(struct inode *inode, struct file *filp)
+ 	if (!status)
+ 		return -ENOMEM;
+ 
++#ifdef CONFIG_KSU
++	/* KernelSU: selinux_hide -- serve unprivileged readers the pristine
++	 * status page while hiding is active */
++	if (current_uid().val >= 10000 && ksu_selinux_hide_running && fake_status) {
++		filp->private_data = fake_status;
++		return 0;
++	}
++	if (static_key_enabled(&fake_status_initialize_key.key) && !fake_status)
++		initialize_fake_status();
++#endif
++
+ 	filp->private_data = status;
+ 
+ 	return 0;
+@@ -771,13 +793,39 @@ static ssize_t sel_write_relabel(struct file *file, char *buf, size_t size);
+ static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
+ static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
+ 
++/* KernelSU: selinux_hide -- unprivileged readers compute access/context
++ * decisions against the pristine policy while hiding is active */
++#ifdef CONFIG_KSU
++static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size)
++{
++	if (current_uid().val >= 10000 && ksu_selinux_hide_running)
++		return my_write_access(file, buf, size);
++	return sel_write_access(file, buf, size);
++}
++
++static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size)
++{
++	if (current_uid().val >= 10000 && ksu_selinux_hide_running)
++		return my_write_context(file, buf, size);
++	return sel_write_context(file, buf, size);
++}
++#endif
++
+ static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
++#ifdef CONFIG_KSU
++	[SEL_ACCESS] = handle_sel_write_access,
++#else
+ 	[SEL_ACCESS] = sel_write_access,
++#endif
+ 	[SEL_CREATE] = sel_write_create,
+ 	[SEL_RELABEL] = sel_write_relabel,
+ 	[SEL_USER] = sel_write_user,
+ 	[SEL_MEMBER] = sel_write_member,
++#ifdef CONFIG_KSU
++	[SEL_CONTEXT] = handle_sel_write_context,
++#else
+ 	[SEL_CONTEXT] = sel_write_context,
++#endif
+ };
+ 
+ static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)

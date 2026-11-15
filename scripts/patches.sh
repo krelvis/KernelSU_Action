@@ -740,6 +740,57 @@ avc_spoof_feature_apply() {
 	endgroup
 }
 
+# ------------------------------------------------------- selinux hide (4.19)
+#
+# Port of SukiSU's selinux_hide feature to the OPLUS 4.19 kernel. The 5.10+
+# implementation is gated out on 4.19 (no struct selinux_policy / RCU
+# hot-swap), so the manager toggle reports "内核不支持此特性" even though the
+# feature ID (KSU_FEATURE_SELINUX_HIDE = 4) exists in the builtin enum.
+#
+# Architecture (mirrors upstream's "lie to readers" approach):
+#  * apply_kernelsu_rules() captures a PRISTINE policy snapshot
+#    (struct ksu_sepolicy419 = policydb + sidtab) BEFORE the KSU rules land,
+#    via policydb_write -> policydb_read round trip.
+#  * selinuxfs.c routes /sys/fs/selinux/{context,access} writes and the
+#    status mmap for uid>=10000 to 4.19 ports of my_write_context/access,
+#    which compute against the snapshot; hooks.c routes /proc/self/attr/
+#    current writes through my_setprocattr (dual parse).
+#  * The live policydb keeps the KSU rules -- root keeps working while
+#    readers see a policy that looks untouched.
+#
+# Two patches are applied:
+#  * patches/ksu/sukisu_selinux_hide_419.diff         -> KSU tree
+#  * patches/ksu/sukisu_selinux_hide_419_kernel.diff  -> kernel security/selinux
+selinux_hide_419_apply() {
+	local ksu_dir="${KERNEL_DIR}/${KSU_DIR:-KernelSU}"
+	local ksu_patch="${REPO_ROOT}/patches/ksu/sukisu_selinux_hide_419.diff"
+	local kern_patch="${REPO_ROOT}/patches/ksu/sukisu_selinux_hide_419_kernel.diff"
+
+	[ -f "$ksu_dir/kernel/ksu_main.c" ] || {
+		warn "KernelSU tree not found at ${ksu_dir}; skipping selinux_hide 4.19"
+		return 0
+	}
+	[ -f "${KERNEL_DIR}/security/selinux/selinuxfs.c" ] || {
+		warn "kernel security/selinux not found; skipping selinux_hide 4.19"
+		return 0
+	}
+
+	if grep -qF 'LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) -- OPLUS 4.19 port' \
+		"$ksu_dir/kernel/feature/selinux_hide.c"; then
+		ok "selinux_hide 4.19 already present; skipping"
+		return 0
+	fi
+
+	group "Applying selinux_hide 4.19 port (KSU tree + kernel security/selinux)"
+	( cd "$ksu_dir" && apply_patch "$ksu_patch" 1 ) \
+		|| die "the selinux_hide 4.19 KSU patch did not apply; the KSU tree has drifted from SukiSU builtin f9aa2fe"
+	( cd "${KERNEL_DIR}/security" && apply_patch "$kern_patch" 1 ) \
+		|| die "the selinux_hide 4.19 kernel patch did not apply against security/selinux"
+	ok "selinux_hide 4.19: pristine snapshot + selinuxfs/hooks readers lie wired"
+	summary "| selinux_hide 4.19 | applied |"
+	endgroup
+}
+
 # ======================================================================== KPM
 
 # SukiSU-Ultra's Kernel Patch Module support needs a post-link step: the
@@ -806,9 +857,11 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			if is_true "${ENABLE_CAMX_KMD:-false}";   then camx_kmd_apply;   fi
 			ksud_bootstrap_apply
 			if is_true "${ENABLE_SUSFS:-false}"; then avc_spoof_feature_apply; fi
+			if is_true "${ENABLE_SELINUX_HIDE_419:-false}"; then selinux_hide_419_apply; fi
 			;;
 		ksud_bootstrap)        ksud_bootstrap_apply ;;
 		avc_spoof)             avc_spoof_feature_apply ;;
+		selinux_hide_419)      selinux_hide_419_apply ;;
 		modversions_tolerance) modversions_tolerance_apply ;;
 		camx_kmd)              camx_kmd_apply ;;
 		sucompat_compat)       sucompat_userptr_compat_apply ;;
