@@ -1,4 +1,5 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index ca0c04a..6530136 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
 @@ -52,19 +52,6 @@ enum sel_inos {
@@ -1196,6 +1197,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +
 +#endif /* LINUX_VERSION_CODE >=/ < KERNEL_VERSION(5, 10, 0) */
 diff --git a/kernel/include/ksu.h b/kernel/include/ksu.h
+index 1d6eddd..7a85609 100644
 --- a/kernel/include/ksu.h
 +++ b/kernel/include/ksu.h
 @@ -11,6 +11,9 @@ extern struct cred *ksu_cred;
@@ -1209,6 +1211,7 @@ diff --git a/kernel/include/ksu.h b/kernel/include/ksu.h
  extern bool ksu_no_custom_rc;
  
 diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
+index 60bc765..0f632de 100644
 --- a/kernel/ksu_main.c
 +++ b/kernel/ksu_main.c
 @@ -122,9 +122,7 @@
@@ -1232,6 +1235,7 @@ diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
      ksu_kernel_umount_init();
  
 diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
+index 930aa46..f44bd31 100644
 --- a/kernel/runtime/ksud.c
 +++ b/kernel/runtime/ksud.c
 @@ -55,9 +55,7 @@ void on_post_fs_data(void)
@@ -1275,6 +1279,7 @@ diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
              cache_sid();
              setup_ksu_cred();
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 6f73a74..bc1a627 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
 @@ -28,6 +28,8 @@ static void reset_avc_cache(u32 seqno)
@@ -1286,39 +1291,57 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
  #if defined(KSU_COMPAT_USE_SELINUX_STATE)
  static struct policydb *get_policydb(void)
  {
-@@ -158,6 +160,39 @@ void apply_kernelsu_rules(void)
+@@ -158,6 +160,57 @@ void apply_kernelsu_rules(void)
          pr_info("SELinux permissive or disabled, apply rules!\n");
      }
  
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +    // Capture the pristine policy snapshot once, BEFORE any rules are applied,
 +    // so selinux_hide can serve readers a view of the unmodified policy.
-+    // Serialization runs under the live policy read lock, mirroring stock
-+    // security_read_policy(); the (sleepable) parse runs outside it.
++    // Lock/allocation order mirrors stock security_read_policy() EXACTLY:
++    // estimate the size under a brief read lock, allocate OUTSIDE the lock
++    // (vmalloc may sleep and we run in PID1's execve context via
++    // ksu_handle_execveat_ksud -- allocating under a spinlock would be
++    // scheduling-while-atomic), then take the lock again only for the
++    // policydb_write(). The (sleepable) parse runs outside the lock too.
 +    if (!ksu_selinux_hide_backup_419) {
 +        rwlock_t *bklock = ksu_get_policy_rwlock();
++        struct policydb *bkdb = get_policydb();
 +        void *bkdata = NULL;
-+        size_t bklen = 0;
++        size_t bklen = 0, best = 0;
 +        struct ksu_sepolicy419 *bk;
++        int bret;
 +
 +        if (bklock)
 +            read_lock(bklock);
-+        bkdata = ksu_sepolicy419_serialize(get_policydb(), &bklen);
++        best = ksu_sepolicy419_bufsize(bkdb);
 +        if (bklock)
 +            read_unlock(bklock);
 +
-+        if (bkdata) {
-+            bk = ksu_sepolicy419_materialize(bkdata, bklen);
-+            kvfree(bkdata);
-+            if (IS_ERR(bk)) {
-+                pr_err("failed to materialize backup sepolicy: %ld\n", PTR_ERR(bk));
-+            } else {
-+                ksu_selinux_hide_backup_419 = bk;
-+                pr_info("selinux_hide: backup sepolicy captured! types nprim=%u\n",
-+                        bk->policydb.p_types.nprim);
-+            }
++        bkdata = vmalloc(best);
++        if (!bkdata) {
++            pr_err("sepolicy419: alloc policy buffer len %zu\n", best);
 +        } else {
-+            pr_err("failed to serialize pristine policy for selinux_hide backup\n");
++            if (bklock)
++                read_lock(bklock);
++            bret = ksu_sepolicy419_serialize_into(bkdb, bkdata, best, &bklen);
++            if (bklock)
++                read_unlock(bklock);
++
++            if (bret) {
++                pr_err("failed to serialize pristine policy for selinux_hide backup\n");
++                vfree(bkdata);
++            } else {
++                bk = ksu_sepolicy419_materialize(bkdata, bklen);
++                vfree(bkdata);
++                if (IS_ERR(bk)) {
++                    pr_err("failed to materialize backup sepolicy: %ld\n", PTR_ERR(bk));
++                } else {
++                    ksu_selinux_hide_backup_419 = bk;
++                    pr_info("selinux_hide: backup sepolicy captured! types nprim=%u\n",
++                            bk->policydb.p_types.nprim);
++                }
++            }
 +        }
 +    }
 +#endif
@@ -1326,7 +1349,7 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
      mutex_lock(&selinux_state.policy_mutex);
  
-@@ -262,6 +297,14 @@ out_flush:
+@@ -262,6 +315,14 @@ out_flush:
  #ifdef CONFIG_KSU_SUSFS
      susfs_set_batch_sid();
  #endif
@@ -1342,6 +1365,7 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
  }
  
 diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index 6b4e0ef..03bac68 100644
 --- a/kernel/selinux/sepolicy.c
 +++ b/kernel/selinux/sepolicy.c
 @@ -1270,3 +1270,124 @@ out_free_data:
@@ -1358,28 +1382,29 @@ diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
 +#include "ss/sidtab.h"
 +
 +/*
-+ * Serialize the given policydb into a freshly allocated vmalloc buffer.
-+ * NO locking here: callers that need a consistent snapshot (rules.c) take
-+ * the live policy read lock around this call, mirroring stock
-+ * security_read_policy(). Returns NULL and logs on failure.
++ * Serialized-size estimate for the given policydb. Called under the live
++ * policy read lock (brief, no allocation). Mirrors stock
++ * security_policydb_len(); the extra nprim padding covers the ebitmap
++ * entries policydb_read() reconstructs that policydb_write() omits.
 + */
-+void *ksu_sepolicy419_serialize(struct policydb *src, size_t *len_out)
++size_t ksu_sepolicy419_bufsize(struct policydb *src)
 +{
-+    size_t len;
-+    void *data;
++    return src->len + (size_t)src->p_types.nprim * (sizeof(u32) + sizeof(u64));
++}
++
++/*
++ * Serialize the given policydb into a CALLER-ALLOCATED buffer.
++ * NO locking, NO allocation here: the caller (rules.c) mirrors stock
++ * security_read_policy() -- estimate size under a brief read lock, allocate
++ * OUTSIDE the lock (vmalloc may sleep and we run in PID1's execve context),
++ * then take the lock again only for the policydb_write().
++ * Returns 0 on success and sets *len_out to the serialized length.
++ */
++int ksu_sepolicy419_serialize_into(struct policydb *src, void *data, size_t len,
++                                   size_t *len_out)
++{
 +    struct policy_file fp;
 +    int ret;
-+
-+    // Some device policy db seems not marking type itself in type_attr_map_array
-+    // policydb_read() adds each type to its own attribute map, so src->len may
-+    // be smaller; preserve one ebitmap entry to avoid triggering -EINVAL.
-+    len = src->len + (size_t)src->p_types.nprim * (sizeof(u32) + sizeof(u64));
-+
-+    data = vmalloc(len);
-+    if (!data) {
-+        pr_err("sepolicy419: alloc policy buffer len %zu\n", len);
-+        return NULL;
-+    }
 +
 +    fp.data = data;
 +    fp.len = len;
@@ -1387,8 +1412,7 @@ diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
 +    ret = policydb_write(src, &fp);
 +    if (ret) {
 +        pr_err("sepolicy419: policydb_write: %d\n", ret);
-+        kvfree(data);
-+        return NULL;
++        return ret;
 +    }
 +    len -= fp.len;
 +    // fixup config
@@ -1406,7 +1430,7 @@ diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
 +        }
 +    }
 +    *len_out = len;
-+    return data;
++    return 0;
 +}
 +
 +struct ksu_sepolicy419 *ksu_sepolicy419_materialize(void *data, size_t len)
@@ -1470,9 +1494,10 @@ diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
 +#endif
 +
 diff --git a/kernel/selinux/sepolicy.h b/kernel/selinux/sepolicy.h
+index 4364ca9..3dc8650 100644
 --- a/kernel/selinux/sepolicy.h
 +++ b/kernel/selinux/sepolicy.h
-@@ -7,6 +7,19 @@
+@@ -7,6 +7,22 @@
  struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol);
  
  void ksu_destroy_sepolicy(struct selinux_policy *orig);
@@ -1484,7 +1509,10 @@ diff --git a/kernel/selinux/sepolicy.h b/kernel/selinux/sepolicy.h
 +    struct sidtab *sidtab;
 +};
 +
-+void *ksu_sepolicy419_serialize(struct policydb *src, size_t *len_out);
++size_t ksu_sepolicy419_bufsize(struct policydb *src);
++
++int ksu_sepolicy419_serialize_into(struct policydb *src, void *data, size_t len,
++                                   size_t *len_out);
 +
 +struct ksu_sepolicy419 *ksu_sepolicy419_materialize(void *data, size_t len);
 +
