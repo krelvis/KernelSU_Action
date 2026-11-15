@@ -2461,8 +2461,29 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 	return 0;
 }
 
+/* 4.19 OPLUS tree carries the 5.x fsnotify backport: fsnotify_ops has
+ * handle_event (with iter_info), no handle_inode_event member.
+ */
+static int susfs_handle_sdcard_event(struct fsnotify_group *group,
+				     struct inode *inode, u32 mask,
+				     const void *data, int data_type,
+				     const unsigned char *file_name,
+				     u32 cookie,
+				     struct fsnotify_iter_info *iter_info)
+{
+	struct qstr q;
+
+	if (!file_name)
+		return 0;
+	q.name = (const unsigned char *)file_name;
+	q.len = strlen(file_name);
+	q.hash = 0;
+	return susfs_handle_sdcard_inode_event(NULL, mask, inode, NULL,
+					       &q, cookie);
+}
+
 static const struct fsnotify_ops fsnotify_ops = {
-	.handle_inode_event = susfs_handle_sdcard_inode_event,
+	.handle_event = susfs_handle_sdcard_event,
 };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
