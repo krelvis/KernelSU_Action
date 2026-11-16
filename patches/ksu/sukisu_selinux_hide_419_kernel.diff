@@ -186,3 +186,39 @@ diff --git a/selinux/avc.c b/selinux/avc.c
  	rc2 = avc_audit(state, ssid, tsid, tclass, requested, &avd, rc,
  			auditdata, flags);
  	if (rc2)
+diff --git a/selinux/ss/services.c b/selinux/ss/services.c
+--- a/selinux/ss/services.c
++++ b/selinux/ss/services.c
+@@ -65,6 +65,11 @@
+ #include "conditional.h"
+ #include "mls.h"
+ #include "objsec.h"
++
++#ifdef CONFIG_KSU
++/* KernelSU: selinux_hide debug */
++#include <linux/cred.h>
++#endif
+ #include "netlabel.h"
+ #include "xfrm.h"
+ #include "ebitmap.h"
+@@ -1839,6 +1844,20 @@ static int security_compute_sid(struct selinux_state *state,
+ 		if (rc)
+ 			goto out_unlock;
+ 	}
++#ifdef CONFIG_KSU
++	/* KernelSU: selinux_hide debug -- why does the computed context miss the
++	 * source sidtab entry (same string, new sid allocated)? */
++	if (kern && tclass == policydb->process_class && current_uid().val >= 10000)
++		pr_info_ratelimited("KSU-CMPDBG: ssid=%u tsid=%u sctx{u=%u r=%u t=%u sens=%u cat_hi=%u} newctx{u=%u r=%u t=%u sens=%u cat_hi=%u} slen=%d nlen=%d\n",
++				    ssid, tsid,
++				    scontext->user, scontext->role, scontext->type,
++				    scontext->range.level[0].sens,
++				    scontext->range.level[0].cat.highbit,
++				    newcontext.user, newcontext.role, newcontext.type,
++				    newcontext.range.level[0].sens,
++				    newcontext.range.level[0].cat.highbit,
++				    scontext->len, newcontext.len);
++#endif
+ 	/* Obtain the sid for the context. */
+ 	rc = context_struct_to_sid(state, &newcontext, out_sid);
+ out_unlock:
