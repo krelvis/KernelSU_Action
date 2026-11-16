@@ -1,8 +1,23 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index ca0c04a..6530136 100644
+index ca0c04a..8ca31fb 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -52,19 +52,6 @@ enum sel_inos {
+@@ -28,6 +28,14 @@ static DEFINE_MUTEX(selinux_hide_mutex);
+ bool ksu_selinux_hide_enabled __read_mostly = false;
+ bool ksu_selinux_hide_running __read_mostly = false;
+ 
++// Bisect R3: when defined, the 4.19 boot-path hooks (ksu_selinux_hide_init /
++// handle_second_stage / handle_post_fs_data / drop_backup_if_unused call
++// sites in ksu_main.c and ksud.c) are compiled out. This keeps the whole
++// feature compiled in but removes every selinux_hide invocation from the
++// boot path, isolating a silent hang at init second_stage. Remove this
++// define once the guilty call site is identified.
++#define KSU_SELINUX_HIDE_BOOTPATH_OFF
++
+ enum sel_inos {
+     SEL_ROOT_INO = 2,
+     SEL_LOAD, /* load policy */
+@@ -52,19 +60,6 @@ enum sel_inos {
      SEL_INO_NEXT, /* The next inode number to use */
  };
  
@@ -22,7 +37,7 @@ index ca0c04a..6530136 100644
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
  #define ksu_avc_has_perm_compat(...) avc_has_perm(__VA_ARGS__)
  #define ksu_security_bounded_transition_compat(...) security_bounded_transition(__VA_ARGS__)
-@@ -79,6 +66,21 @@ static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct co
+@@ -79,6 +74,21 @@ static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct co
  #define ksu_task_security_struct cred_security_struct
  #endif
  
@@ -44,7 +59,7 @@ index ca0c04a..6530136 100644
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1250,1151 @@ allow:
+@@ -1248,3 +1258,1151 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -1211,7 +1226,7 @@ index 1d6eddd..7a85609 100644
  extern bool ksu_no_custom_rc;
  
 diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
-index 60bc765..0f632de 100644
+index 60bc765..2b7fd5b 100644
 --- a/kernel/ksu_main.c
 +++ b/kernel/ksu_main.c
 @@ -122,9 +122,7 @@
@@ -1224,60 +1239,55 @@ index 60bc765..0f632de 100644
  #include "feature/shell_su_adb_only.c"
  #include "feature/mount_hide.c"
  #include "runtime/ksud.c"
-@@ -195,9 +193,7 @@ int __init kernelsu_init(void)
+@@ -195,7 +193,7 @@ int __init kernelsu_init(void)
  
      ksu_shell_su_adb_only_init();
  
 -#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || !defined(KSU_SELINUX_HIDE_BOOTPATH_OFF)
      ksu_selinux_hide_init();
--#endif
- 
-     ksu_kernel_umount_init();
+ #endif
  
 diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
-index 930aa46..f44bd31 100644
+index 930aa46..3db53b7 100644
 --- a/kernel/runtime/ksud.c
 +++ b/kernel/runtime/ksud.c
-@@ -55,9 +55,7 @@ void on_post_fs_data(void)
+@@ -55,7 +55,7 @@ void on_post_fs_data(void)
      ksu_observer_init();
      // sanity check, this may influence the performance
      stop_input_hook();
 -#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || !defined(KSU_SELINUX_HIDE_BOOTPATH_OFF)
      ksu_selinux_hide_handle_post_fs_data();
--#endif
+ #endif
      // retry forced features which failed at second stage
-     ksu_feature_apply_forced();
-     ksu_extension_apply_forced();
-@@ -97,9 +95,7 @@ void on_boot_completed(void)
+@@ -97,7 +97,7 @@ void on_boot_completed(void)
      ksu_boot_completed = true;
      pr_info("on_boot_completed!\n");
      track_throne(true);
 -#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || !defined(KSU_SELINUX_HIDE_BOOTPATH_OFF)
      ksu_selinux_hide_drop_backup_if_unused();
--#endif
+ #endif
  }
- 
- #define MAX_ARG_STRINGS 0x7FFFFFFF
-@@ -204,9 +200,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
+@@ -204,7 +204,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
  #ifndef KSU_NO_PREINIT
                  ksu_preinit_release();
  #endif
 -#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || !defined(KSU_SELINUX_HIDE_BOOTPATH_OFF)
                  ksu_selinux_hide_handle_second_stage();
--#endif
+ #endif
                  apply_kernelsu_rules();
-                 cache_sid();
-                 setup_ksu_cred();
-@@ -284,9 +278,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr, struct use
+@@ -284,7 +284,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr, struct use
  #ifndef KSU_NO_PREINIT
              ksu_preinit_release();
  #endif
 -#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || !defined(KSU_SELINUX_HIDE_BOOTPATH_OFF)
              ksu_selinux_hide_handle_second_stage();
--#endif
+ #endif
              apply_kernelsu_rules();
-             cache_sid();
-             setup_ksu_cred();
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 index 6f73a74..6399450 100644
 --- a/kernel/selinux/rules.c
