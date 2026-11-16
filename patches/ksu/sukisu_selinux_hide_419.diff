@@ -1,5 +1,5 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index ca0c04a..a702725 100644
+index ca0c04a..0934684 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
 @@ -28,6 +28,12 @@ static DEFINE_MUTEX(selinux_hide_mutex);
@@ -10,7 +10,7 @@ index ca0c04a..a702725 100644
 +// boot-path call sites. Round 3 proved the hang lives in one of these call
 +// sites (all gated out => boots). Remove the knobs once the culprit is fixed.
 +#define KSU_SELINUX_HIDE_INIT_ON 1
-+#define KSU_SELINUX_HIDE_HANDLERS_ON 0
++#define KSU_SELINUX_HIDE_HANDLERS_ON 1
 +
  enum sel_inos {
      SEL_ROOT_INO = 2,
@@ -57,7 +57,7 @@ index ca0c04a..a702725 100644
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1256,1151 @@ allow:
+@@ -1248,3 +1256,1158 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -1066,25 +1066,33 @@ index ca0c04a..a702725 100644
 +    struct selinux_kernel_status *status, *new_status;
 +    struct page *new_page;
 +
-+    mutex_lock(&selinux_state.ss->status_lock);
-+    if (fake_status)
-+        goto out;
++    // selinux_kernel_status_page() takes ss->status_lock itself on 4.19.
++    // NEVER hold the lock around this call -- mutexes are not recursive and
++    // the previous version self-deadlocked PID1 at init second_stage
++    // (silent hang, no oops, no panic record).
 +    stock = selinux_kernel_status_page(&selinux_state);
 +    if (!stock) {
 +        pr_warn("initialize_fake_status: status_page not exist\n");
-+        goto out;
++        return;
 +    }
 +
 +    status = page_address(stock);
 +    if (!status->enforcing) {
 +        pr_warn("initialize_fake_status: skip not enforcing\n");
-+        goto out;
++        return;
++    }
++
++    mutex_lock(&selinux_state.ss->status_lock);
++    if (fake_status) {
++        mutex_unlock(&selinux_state.ss->status_lock);
++        return;
 +    }
 +
 +    new_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
 +    if (!new_page) {
 +        pr_err("initialize_fake_status: failed to allocate page\n");
-+        goto out;
++        mutex_unlock(&selinux_state.ss->status_lock);
++        return;
 +    }
 +
 +    new_status = page_address(new_page);
@@ -1094,7 +1102,6 @@ index ca0c04a..a702725 100644
 +    pr_info("initialize_fake_status initialized: sequence=%d, policyload=%d, enforcing=%d\n", new_status->sequence,
 +            new_status->policyload, new_status->enforcing);
 +
-+out:
 +    mutex_unlock(&selinux_state.ss->status_lock);
 +}
 +
