@@ -56,7 +56,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1256,1184 @@ allow:
+@@ -1248,3 +1256,1167 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -99,6 +99,10 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +static int security_sid_to_context_with_policy(struct ksu_sepolicy419 *policy, u32 sid, char **scontext,
 +                                               u32 *scontext_len);
 +static int security_context_to_sid_live(const char *scontext, u32 scontext_len, u32 *sid);
++/* stock kernel symbol (security/selinux/ss/services.c, linked into the same
++ * vmlinux) -- used for the setprocattr conversion so the sidtab dedup stays
++ * identical to the stock setcon path */
++int security_context_to_sid(struct selinux_state *state, const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp);
 +static void security_compute_av_user_with_policy(struct ksu_sepolicy419 *policy, u32 ssid, u32 tsid, u16 tclass,
 +                                                 struct av_decision *avd);
 +
@@ -384,61 +388,40 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +// parse once like security_context_to_sid(), -EAGAIN if the type mark is stale
 +static int security_context_to_sid_live(const char *scontext, u32 scontext_len, u32 *sid)
 +{
-+    struct context context;
-+    char *scontext2;
-+    u32 backup_sid;
++    struct context *ctx;
++    u32 type;
 +    int rc;
 +
 +    /* An empty security context is never valid. */
 +    if (!scontext_len)
 +        return -EINVAL;
 +
-+    /* Copy the string to allow changes and ensure a NUL terminator */
-+    scontext2 = kmemdup_nul(scontext, scontext_len, GFP_KERNEL);
-+    if (!scontext2)
-+        return -ENOMEM;
-+
 +    *sid = SECSID_NULL;
-+    read_lock(hide_live_rwlock());
-+    // Parse against the LIVE policydb FIRST. For original types this produces
-+    // byte-identical fields to the stock security_context_to_sid, so the
-+    // sidtab dedup finds the canonical entry. The previous backup-first parse
-+    // produced contexts whose fields drifted from the canonical entries (same
-+    // string, different sid): every execve's security_transition_sid then
-+    // resolved the app's own domain to a SECOND sid, tripping the fatal
-+    // PROCESS__TRANSITION check (EACCES, "Unable to create a shell").
-+    rc = backup_string_to_context_struct(hide_live_policydb(), hide_live_policydb(), hide_live_sidtab(), scontext2,
-+                                         &context, hide_live_generation(), SECSID_NULL);
-+    if (rc == -EINVAL) {
-+        // The live parse failed with an unknown type: retry against the
-+        // pristine backup (stale/type-mark scenarios) and mirror the new
-+        // context into both sidtabs, keeping the backup-view numbering in
-+        // sync. KSU-added types (ksu, su, ksud_file, ...) never land here --
-+        // they exist only in the live policy and are handled by the live
-+        // parse above.
-+        rc = backup_string_to_context_struct(&BACKUP419->policydb, hide_live_policydb(), BACKUP419->sidtab, scontext2,
-+                                             &context, hide_live_generation(), SECSID_NULL);
-+        if (!rc) {
-+            rc = sidtab_context_to_sid(BACKUP419->sidtab, &context, &backup_sid);
-+            if (!rc)
-+                rc = sidtab_context_to_sid(hide_live_sidtab(), &context, sid);
-+        }
-+        context_destroy(&context);
-+        goto out_unlock;
-+    }
++    // KernelSU: use the STOCK conversion. It takes its own policy_rwlock and
++    // produces sidtab entries with the exact stock semantics, so the dedup
++    // reuses the canonical entries created before selinux_hide went live.
++    // The previous custom backup-first parse created DUPLICATE entries for
++    // contexts stock had already mapped (same string, different sid): every
++    // execve's security_transition_sid then resolved the app's own domain to
++    // a second sid and tripped the fatal PROCESS__TRANSITION check (EACCES,
++    // "Unable to create a shell" for the manager's KsuCli).
++    rc = security_context_to_sid(&selinux_state, scontext, scontext_len, sid, GFP_KERNEL);
 +    if (rc)
-+        goto out_unlock;
++        return rc;
 +
-+    // canonical live parse succeeded: register in the backup sidtab (keeps the
-+    // backup-view sid numbering in sync) and return the live sidtab's answer,
-+    // which reuses the canonical sid when one exists.
-+    rc = sidtab_context_to_sid(BACKUP419->sidtab, &context, &backup_sid);
-+    if (!rc)
-+        rc = sidtab_context_to_sid(hide_live_sidtab(), &context, sid);
-+    context_destroy(&context);
-+out_unlock:
++    // Guard: apps must stay within the backup view. Types that did not exist
++    // when the pristine backup was captured (KSU-added or stale marks) are
++    // rejected with -EAGAIN; my_setprocattr's dual-parse then decides.
++    read_lock(hide_live_rwlock());
++    ctx = sidtab_search(hide_live_sidtab(), *sid);
++    if (!ctx) {
++        rc = -EAGAIN;
++    } else {
++        type = ctx->type;
++        if (ksu_type_is_original(hide_live_policydb(), hide_live_generation(), type) <= 0)
++            rc = -EAGAIN;
++    }
 +    read_unlock(hide_live_rwlock());
-+    kfree(scontext2);
 +    return rc;
 +}
 +
