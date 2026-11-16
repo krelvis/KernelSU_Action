@@ -108,3 +108,80 @@ diff --git a/selinux/selinuxfs.c b/selinux/selinuxfs.c
  };
  
  static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
+diff --git a/selinux/avc.c b/selinux/avc.c
+--- a/selinux/avc.c
++++ b/selinux/avc.c
+@@ -38,6 +38,12 @@ extern u32 susfs_priv_app_sid;
+ extern struct static_key_false susfs_is_avc_log_spoofing_enabled;
+ #endif // #ifdef CONFIG_KSU_SUSFS
+ 
++#ifdef CONFIG_KSU
++/* KernelSU: selinux_hide debug -- surface dontaudit'd denials for app uids */
++#include <linux/cred.h>
++#include <linux/hardirq.h>
++#endif
++
+ #include "classmap.h"
+ #ifdef OPLUS_FEATURE_SELINUX_CONTROL_LOG
+ #include <soc/oplus/system/proc.h>
+@@ -1204,6 +1210,36 @@ inline int avc_has_perm_noaudit(struct selinux_state *state,
+  * permissions are granted, -%EACCES if any permissions are denied, or
+  * another -errno upon other errors.
+  */
++
++#ifdef CONFIG_KSU
++/* KernelSU: selinux_hide debug -- decode and log denials that policy dontaudit
++ * rules would otherwise suppress, so silent app-domain rejections (exec of the
++ * manager CLI, etc.) become visible in dmesg. */
++static void ksu_avc_dbg_log_deny(struct selinux_state *state, u32 ssid, u32 tsid, u16 tclass, u32 requested, u32 avd_allowed)
++{
++	char *scon = NULL, *tcon = NULL;
++	u32 slen = 0, tlen = 0;
++	bool decoded = false;
++
++	if (!in_atomic()) {
++		decoded = !security_sid_to_context(state, ssid, &scon, &slen) &&
++			  !security_sid_to_context(state, tsid, &tcon, &tlen);
++	}
++
++	if (decoded)
++		pr_info_ratelimited("KSU-AVCDBG: DENY uid=%d comm=%s scon=%s tcon=%s tclass=%u req=0x%x avd_allowed=0x%x\n",
++				    current_uid().val, current->comm, scon ?: "?", tcon ?: "?",
++				    (unsigned)tclass, requested, avd_allowed);
++	else
++		pr_info_ratelimited("KSU-AVCDBG: DENY uid=%d comm=%s ssid=%u tsid=%u tclass=%u req=0x%x avd_allowed=0x%x (atomic)\n",
++				    current_uid().val, current->comm, ssid, tsid,
++				    (unsigned)tclass, requested, avd_allowed);
++
++	kfree(scon);
++	kfree(tcon);
++}
++#endif
++
+ int avc_has_perm(struct selinux_state *state, u32 ssid, u32 tsid, u16 tclass,
+ 		 u32 requested, struct common_audit_data *auditdata)
+ {
+@@ -1213,6 +1249,11 @@ int avc_has_perm(struct selinux_state *state, u32 ssid, u32 tsid, u16 tclass,
+ 	rc = avc_has_perm_noaudit(state, ssid, tsid, tclass, requested, 0,
+ 				  &avd);
+ 
++#ifdef CONFIG_KSU
++	if (unlikely(rc) && current_uid().val >= 10000)
++		ksu_avc_dbg_log_deny(state, ssid, tsid, tclass, requested, avd.allowed);
++#endif
++
+ 	rc2 = avc_audit(state, ssid, tsid, tclass, requested, &avd, rc,
+ 			auditdata, 0);
+ 	if (rc2)
+@@ -1232,6 +1273,11 @@ int avc_has_perm_flags(struct selinux_state *state,
+ 				  (flags & MAY_NOT_BLOCK) ? AVC_NONBLOCKING : 0,
+ 				  &avd);
+ 
++#ifdef CONFIG_KSU
++	if (unlikely(rc) && current_uid().val >= 10000)
++		ksu_avc_dbg_log_deny(state, ssid, tsid, tclass, requested, avd.allowed);
++#endif
++
+ 	rc2 = avc_audit(state, ssid, tsid, tclass, requested, &avd, rc,
+ 			auditdata, flags);
+ 	if (rc2)

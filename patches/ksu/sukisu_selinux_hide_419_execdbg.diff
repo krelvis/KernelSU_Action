@@ -1,0 +1,48 @@
+diff --git a/fs/exec.c b/fs/exec.c
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1808,8 +1808,16 @@ static int __do_execve_file(int fd, struct filename *filename,
+ 	if (!file)
+ 		file = do_open_execat(fd, filename, flags);
+ 	retval = PTR_ERR(file);
+-	if (IS_ERR(file))
++	if (IS_ERR(file)) {
++#ifdef CONFIG_KSU
++		/* KernelSU: selinux_hide debug -- log exec open failures for app uids */
++		if (current_uid().val >= 10000)
++			pr_info_ratelimited("KSU-EXECDBG: open_exec fail rc=%d uid=%d comm=%s path=%s\n",
++					    retval, current_uid().val, current->comm,
++					    filename ? filename->name : "(null)");
++#endif
+ 		goto out_unmark;
++	}
+ 
+ #ifdef CONFIG_OPLUS_SECURE_GUARD
+ #if defined(CONFIG_OPLUS_EXECVE_BLOCK) || defined(CONFIG_OPLUS_EXECVE_REPORT)
+@@ -1930,6 +1938,13 @@ out_unmark:
+ 	current->in_execve = 0;
+ 
+ out_free:
++#ifdef CONFIG_KSU
++	/* KernelSU: selinux_hide debug -- catch every execve failure for app uids */
++	if (retval < 0 && current_uid().val >= 10000)
++		pr_info_ratelimited("KSU-EXECDBG: execve fail rc=%d uid=%d comm=%s path=%s\n",
++				    retval, current_uid().val, current->comm,
++				    filename ? filename->name : "(null)");
++#endif
+ 	free_bprm(bprm);
+ 	kfree(pathbuf);
+ 
+@@ -1937,6 +1952,12 @@ out_files:
+ 	if (displaced)
+ 		reset_files_struct(displaced);
+ out_ret:
++#ifdef CONFIG_KSU
++	if (retval < 0 && current_uid().val >= 10000)
++		pr_info_ratelimited("KSU-EXECDBG: execve fail(rc) rc=%d uid=%d comm=%s path=%s\n",
++				    retval, current_uid().val, current->comm,
++				    filename ? filename->name : "(null)");
++#endif
+ 	if (filename)
+ 		putname(filename);
+ 	return retval;

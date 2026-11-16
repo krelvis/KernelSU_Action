@@ -791,6 +791,14 @@ selinux_hide_419_apply() {
 	if is_true "${ENABLE_SELINUX_HIDE_419_KERNEL:-false}"; then
 		( cd "${KERNEL_DIR}/security" && apply_patch "$kern_patch" 1 ) \
 			|| die "the selinux_hide 4.19 kernel patch did not apply against security/selinux"
+		# KernelSU: selinux_hide debug instrumentation -- fs/exec.c failure log
+		# for uid>=10000 (pairs with the avc.c silent-denial log in the kernel
+		# patch above). Ratelimited, failure paths only; release-safe.
+		local execdbg_patch="${REPO_ROOT}/patches/ksu/sukisu_selinux_hide_419_execdbg.diff"
+		if [ -f "$execdbg_patch" ]; then
+			( cd "${KERNEL_DIR}" && apply_patch "$execdbg_patch" 1 ) \
+				|| die "the selinux_hide 4.19 exec-debug patch did not apply against fs/exec.c"
+		fi
 		ok "selinux_hide 4.19: pristine snapshot + selinuxfs/hooks readers lie wired"
 	else
 		warn "selinux_hide 4.19: kernel-side selinuxfs/hooks patch skipped (ENABLE_SELINUX_HIDE_419_KERNEL=false)"
