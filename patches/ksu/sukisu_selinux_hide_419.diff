@@ -1,5 +1,4 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index ca0c04a..4637eaa 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
 @@ -28,6 +28,12 @@ static DEFINE_MUTEX(selinux_hide_mutex);
@@ -57,7 +56,7 @@ index ca0c04a..4637eaa 100644
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1256,1174 @@ allow:
+@@ -1248,3 +1256,1184 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -401,28 +400,38 @@ index ca0c04a..4637eaa 100644
 +
 +    *sid = SECSID_NULL;
 +    read_lock(hide_live_rwlock());
-+    rc = backup_string_to_context_struct(&BACKUP419->policydb, hide_live_policydb(), BACKUP419->sidtab, scontext2,
++    // Parse against the LIVE policydb FIRST. For original types this produces
++    // byte-identical fields to the stock security_context_to_sid, so the
++    // sidtab dedup finds the canonical entry. The previous backup-first parse
++    // produced contexts whose fields drifted from the canonical entries (same
++    // string, different sid): every execve's security_transition_sid then
++    // resolved the app's own domain to a SECOND sid, tripping the fatal
++    // PROCESS__TRANSITION check (EACCES, "Unable to create a shell").
++    rc = backup_string_to_context_struct(hide_live_policydb(), hide_live_policydb(), hide_live_sidtab(), scontext2,
 +                                         &context, hide_live_generation(), SECSID_NULL);
 +    if (rc == -EINVAL) {
-+        // KSU-added types (ksu, su, ksud_file, ...) exist ONLY in the live
-+        // policy: the pristine backup has no such types, so the backup parse
-+        // fails with -EINVAL (not -EAGAIN) and used to hard-fail setprocattr,
-+        // killing ksud's setcon to u:r:ksu:s0 ("Unable to create a shell").
-+        // Fall back to parsing in the live policydb. The dyntransition /
-+        // setcurrent permissions of the LIVE policy still guard the actual
-+        // transition, so this does not leak the modification to untrusted
-+        // callers.
-+        rc = backup_string_to_context_struct(hide_live_policydb(), hide_live_policydb(), hide_live_sidtab(), scontext2,
++        // The live parse failed with an unknown type: retry against the
++        // pristine backup (stale/type-mark scenarios) and mirror the new
++        // context into both sidtabs, keeping the backup-view numbering in
++        // sync. KSU-added types (ksu, su, ksud_file, ...) never land here --
++        // they exist only in the live policy and are handled by the live
++        // parse above.
++        rc = backup_string_to_context_struct(&BACKUP419->policydb, hide_live_policydb(), BACKUP419->sidtab, scontext2,
 +                                             &context, hide_live_generation(), SECSID_NULL);
-+        if (!rc)
-+            rc = sidtab_context_to_sid(hide_live_sidtab(), &context, sid);
++        if (!rc) {
++            rc = sidtab_context_to_sid(BACKUP419->sidtab, &context, &backup_sid);
++            if (!rc)
++                rc = sidtab_context_to_sid(hide_live_sidtab(), &context, sid);
++        }
 +        context_destroy(&context);
 +        goto out_unlock;
 +    }
 +    if (rc)
 +        goto out_unlock;
 +
-+    // update backup sidtab first
++    // canonical live parse succeeded: register in the backup sidtab (keeps the
++    // backup-view sid numbering in sync) and return the live sidtab's answer,
++    // which reuses the canonical sid when one exists.
 +    rc = sidtab_context_to_sid(BACKUP419->sidtab, &context, &backup_sid);
 +    if (!rc)
 +        rc = sidtab_context_to_sid(hide_live_sidtab(), &context, sid);
@@ -1233,7 +1242,6 @@ index ca0c04a..4637eaa 100644
 +
 +#endif /* LINUX_VERSION_CODE >=/ < KERNEL_VERSION(5, 10, 0) */
 diff --git a/kernel/include/ksu.h b/kernel/include/ksu.h
-index 1d6eddd..7a85609 100644
 --- a/kernel/include/ksu.h
 +++ b/kernel/include/ksu.h
 @@ -11,6 +11,9 @@ extern struct cred *ksu_cred;
@@ -1247,7 +1255,6 @@ index 1d6eddd..7a85609 100644
  extern bool ksu_no_custom_rc;
  
 diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
-index 60bc765..a592663 100644
 --- a/kernel/ksu_main.c
 +++ b/kernel/ksu_main.c
 @@ -122,9 +122,7 @@
@@ -1270,7 +1277,6 @@ index 60bc765..a592663 100644
  #endif
  
 diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
-index 930aa46..47558b9 100644
 --- a/kernel/runtime/ksud.c
 +++ b/kernel/runtime/ksud.c
 @@ -55,7 +55,7 @@ void on_post_fs_data(void)
@@ -1310,7 +1316,6 @@ index 930aa46..47558b9 100644
  #endif
              apply_kernelsu_rules();
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index 6f73a74..bc1a627 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
 @@ -28,6 +28,8 @@ static void reset_avc_cache(u32 seqno)
@@ -1396,7 +1401,6 @@ index 6f73a74..bc1a627 100644
  }
  
 diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
-index 6b4e0ef..03bac68 100644
 --- a/kernel/selinux/sepolicy.c
 +++ b/kernel/selinux/sepolicy.c
 @@ -1270,3 +1270,124 @@ out_free_data:
@@ -1525,7 +1529,6 @@ index 6b4e0ef..03bac68 100644
 +#endif
 +
 diff --git a/kernel/selinux/sepolicy.h b/kernel/selinux/sepolicy.h
-index 4364ca9..3dc8650 100644
 --- a/kernel/selinux/sepolicy.h
 +++ b/kernel/selinux/sepolicy.h
 @@ -7,6 +7,22 @@
