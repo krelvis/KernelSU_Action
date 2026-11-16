@@ -1,5 +1,5 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index ca0c04a..0934684 100644
+index ca0c04a..4637eaa 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
 @@ -28,6 +28,12 @@ static DEFINE_MUTEX(selinux_hide_mutex);
@@ -57,7 +57,7 @@ index ca0c04a..0934684 100644
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1256,1158 @@ allow:
+@@ -1248,3 +1256,1174 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -403,6 +403,22 @@ index ca0c04a..0934684 100644
 +    read_lock(hide_live_rwlock());
 +    rc = backup_string_to_context_struct(&BACKUP419->policydb, hide_live_policydb(), BACKUP419->sidtab, scontext2,
 +                                         &context, hide_live_generation(), SECSID_NULL);
++    if (rc == -EINVAL) {
++        // KSU-added types (ksu, su, ksud_file, ...) exist ONLY in the live
++        // policy: the pristine backup has no such types, so the backup parse
++        // fails with -EINVAL (not -EAGAIN) and used to hard-fail setprocattr,
++        // killing ksud's setcon to u:r:ksu:s0 ("Unable to create a shell").
++        // Fall back to parsing in the live policydb. The dyntransition /
++        // setcurrent permissions of the LIVE policy still guard the actual
++        // transition, so this does not leak the modification to untrusted
++        // callers.
++        rc = backup_string_to_context_struct(hide_live_policydb(), hide_live_policydb(), hide_live_sidtab(), scontext2,
++                                             &context, hide_live_generation(), SECSID_NULL);
++        if (!rc)
++            rc = sidtab_context_to_sid(hide_live_sidtab(), &context, sid);
++        context_destroy(&context);
++        goto out_unlock;
++    }
 +    if (rc)
 +        goto out_unlock;
 +
