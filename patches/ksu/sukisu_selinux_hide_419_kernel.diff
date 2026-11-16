@@ -124,7 +124,7 @@ diff --git a/selinux/avc.c b/selinux/avc.c
  #include "classmap.h"
  #ifdef OPLUS_FEATURE_SELINUX_CONTROL_LOG
  #include <soc/oplus/system/proc.h>
-@@ -1204,6 +1210,36 @@ inline int avc_has_perm_noaudit(struct selinux_state *state,
+@@ -1204,6 +1210,37 @@ inline int avc_has_perm_noaudit(struct selinux_state *state,
   * permissions are granted, -%EACCES if any permissions are denied, or
   * another -errno upon other errors.
   */
@@ -145,8 +145,9 @@ diff --git a/selinux/avc.c b/selinux/avc.c
 +	}
 +
 +	if (decoded)
-+		pr_info_ratelimited("KSU-AVCDBG: DENY uid=%d comm=%s scon=%s tcon=%s tclass=%u req=0x%x avd_allowed=0x%x\n",
-+				    current_uid().val, current->comm, scon ?: "?", tcon ?: "?",
++		pr_info_ratelimited("KSU-AVCDBG: DENY uid=%d comm=%s ssid=%u tsid=%u scon=%s tcon=%s tclass=%s(%u) req=0x%x avd_allowed=0x%x\n",
++				    current_uid().val, current->comm, ssid, tsid, scon ?: "?", tcon ?: "?",
++				    (tclass && tclass < ARRAY_SIZE(secclass_map)) ? secclass_map[tclass - 1].name : "?",
 +				    (unsigned)tclass, requested, avd_allowed);
 +	else
 +		pr_info_ratelimited("KSU-AVCDBG: DENY uid=%d comm=%s ssid=%u tsid=%u tclass=%u req=0x%x avd_allowed=0x%x (atomic)\n",
@@ -161,7 +162,7 @@ diff --git a/selinux/avc.c b/selinux/avc.c
  int avc_has_perm(struct selinux_state *state, u32 ssid, u32 tsid, u16 tclass,
  		 u32 requested, struct common_audit_data *auditdata)
  {
-@@ -1213,6 +1249,11 @@ int avc_has_perm(struct selinux_state *state, u32 ssid, u32 tsid, u16 tclass,
+@@ -1213,6 +1250,11 @@ int avc_has_perm(struct selinux_state *state, u32 ssid, u32 tsid, u16 tclass,
  	rc = avc_has_perm_noaudit(state, ssid, tsid, tclass, requested, 0,
  				  &avd);
  
@@ -173,7 +174,7 @@ diff --git a/selinux/avc.c b/selinux/avc.c
  	rc2 = avc_audit(state, ssid, tsid, tclass, requested, &avd, rc,
  			auditdata, 0);
  	if (rc2)
-@@ -1232,6 +1273,11 @@ int avc_has_perm_flags(struct selinux_state *state,
+@@ -1232,6 +1274,11 @@ int avc_has_perm_flags(struct selinux_state *state,
  				  (flags & MAY_NOT_BLOCK) ? AVC_NONBLOCKING : 0,
  				  &avd);
  
