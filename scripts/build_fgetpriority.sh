@@ -14,6 +14,7 @@ set -euo pipefail
 
 KERNEL_DIR=${KERNEL_DIR:?KERNEL_DIR must be set}
 WORKSPACE=${WORKSPACE:-$(cd "${KERNEL_DIR}/.." && pwd)}
+OUT="$KERNEL_DIR/out"
 SRC_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MOD_SRC="$SRC_ROOT/fgetpriority"
 ZIP_OUT="$WORKSPACE/fgetpriority-module-4.19.zip"
@@ -56,8 +57,17 @@ if [ -z "$SIGKEY" ]; then
 else
 	X509="$(dirname "$SIGKEY")/signing_key.x509"
 	[ -f "$X509" ] || X509="$SIGKEY"
-	"$KERNEL_DIR/scripts/sign-file" sha512 "$SIGKEY" "$X509" "$KO"
-	echo "ko signed: key=$SIGKEY cert=$X509"
+	# with O= builds the HOSTCC'd sign-file lives in out/scripts/, not srctree
+	SIGN_FILE=""
+	for d in "$OUT/scripts" "$KERNEL_DIR/scripts"; do
+		[ -x "$d/sign-file" ] && SIGN_FILE="$d/sign-file" && break
+	done
+	if [ -z "$SIGN_FILE" ]; then
+		echo "::warning::sign-file not found; ko left unsigned (MODULE_SIG_FORCE=y will reject it!)"
+	else
+		"$SIGN_FILE" sha512 "$SIGKEY" "$X509" "$KO"
+		echo "ko signed: sign-file=$SIGN_FILE key=$SIGKEY cert=$X509"
+	fi
 fi
 
 group "fgetpriority: package module zip"
