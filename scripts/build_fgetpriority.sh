@@ -28,10 +28,12 @@ grep -n 'obj-m' "$MOD_SRC/kernel/Makefile" | head -n1
 
 group "fgetpriority: build ko (CC=clang, same tree/flags as the kernel)"
 export PATH="${CLANG_PATH:-}:${PATH}"
-# shellcheck disable=SC2086  -- CUSTOM_CMDS/EXTRA_CMDS are intentional word lists
-# CUSTOM_CMDS carries CLANG_TRIPLE; without it clang defaults to the x86_64
-# target and the module compiles with __aarch64__ undefined (CI run 44039990492).
+# shellcheck disable=SC2086  -- make_args word list, replicate build.sh exactly:
+# GCC_64 carries CROSS_COMPILE (drives clang --target on 4.19; without it clang
+# compiles for x86_64 - CI runs 44039990492/44047879097), GCC_32 the 32-bit
+# CROSS_COMPILE_ARM32, CUSTOM_CMDS the CLANG_TRIPLE fallback.
 make -C "$KERNEL_DIR" O=out ARCH=arm64 CC=clang ${CUSTOM_CMDS:-} ${EXTRA_CMDS:-} \
+	${GCC_64:-} ${GCC_32:-} \
 	M="$MOD_SRC/kernel" CONFIG_FGETPRIORITY=m modules
 
 KO="$MOD_SRC/kernel/fgetpriority.ko"
