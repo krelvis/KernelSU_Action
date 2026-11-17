@@ -56,7 +56,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1256,1167 @@ allow:
+@@ -1248,3 +1256,1171 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -1215,8 +1215,12 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +    mutex_lock(&selinux_hide_mutex);
 +    if (!ksu_selinux_hide_running && BACKUP419) {
 +        pr_info("selinux_hide is not enabled - drop backup_sepolicy\n");
-+        sidtab_destroy(BACKUP419->sidtab);
-+        kfree(BACKUP419->sidtab);
++        // NOTE: ksu_destroy_sepolicy419() already does the FULL teardown:
++        // sidtab_destroy() + kfree(sidtab) (and NULLs the pointer) +
++        // policydb_destroy() + kfree(wrapper). Destroying/freeing the sidtab
++        // here first left pol->sidtab dangling for the second sidtab_destroy()
++        // inside the helper -- use-after-free walking freed memory at
++        // boot_completed ("Fatal exception" panic, sidtab_destroy_tree Oops).
 +        ksu_destroy_sepolicy419(BACKUP419);
 +        ksu_selinux_hide_backup_419 = NULL;
 +    }
