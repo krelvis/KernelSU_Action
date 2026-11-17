@@ -28,8 +28,10 @@ grep -n 'obj-m' "$MOD_SRC/kernel/Makefile" | head -n1
 
 group "fgetpriority: build ko (CC=clang, same tree/flags as the kernel)"
 export PATH="${CLANG_PATH:-}:${PATH}"
-# shellcheck disable=SC2086  -- EXTRA_CMDS is an intentional word list
-make -C "$KERNEL_DIR" O=out ARCH=arm64 CC=clang ${EXTRA_CMDS:-} \
+# shellcheck disable=SC2086  -- CUSTOM_CMDS/EXTRA_CMDS are intentional word lists
+# CUSTOM_CMDS carries CLANG_TRIPLE; without it clang defaults to the x86_64
+# target and the module compiles with __aarch64__ undefined (CI run 44039990492).
+make -C "$KERNEL_DIR" O=out ARCH=arm64 CC=clang ${CUSTOM_CMDS:-} ${EXTRA_CMDS:-} \
 	M="$MOD_SRC/kernel" CONFIG_FGETPRIORITY=m modules
 
 KO="$MOD_SRC/kernel/fgetpriority.ko"
