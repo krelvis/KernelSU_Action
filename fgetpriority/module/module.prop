@@ -1,0 +1,6 @@
+id=fgetpriority
+name=fgetpriority
+version=v0.0.4-oplus419.1
+versionCode=5
+author=xx, frknkrc44
+description=A kernel module to hide some syscall results. Prebuilt for OnePlus 9R oplus 4.19.157-perf kernel, signed with the kernel module-signing key (MODULE_SIG_FORCE compatible).

@@ -437,6 +437,12 @@ jobs:
       - name: Build kernel
         run: bash scripts/build.sh all
 
+      # fgetpriority LKM for the 4.19 oplus tree (MODULE_SIG_FORCE compatible).
+      # Non-fatal: an upstream API change must not cost us the boot artifact.
+      - name: Build & sign fgetpriority ko
+        run: bash scripts/build_fgetpriority.sh all
+        continue-on-error: true
+
       - name: Package artifacts
         run: bash scripts/package.sh all
 
@@ -491,6 +497,13 @@ jobs:
           name: AnyKernel3${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
           path: kernel_workspace/AnyKernel3/*
           if-no-files-found: error
+
+      - name: Upload fgetpriority module
+        uses: actions/upload-artifact@v4
+        with:
+          name: fgetpriority-module-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/fgetpriority-module-4.19.zip
+          if-no-files-found: warn
 
       - name: Upload DTBO image
         if: env.CHECK_DTBO_IS_OK == 'true'
