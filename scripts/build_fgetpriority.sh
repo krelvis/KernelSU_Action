@@ -74,6 +74,8 @@ group "fgetpriority: package module zip"
 mkdir -p "$MOD_SRC/module/ko"
 cp -f "$KO" "$MOD_SRC/module/ko/fgetpriority.ko"
 rm -f "$ZIP_OUT"
-(cd "$MOD_SRC" && zip -qr9 "$ZIP_OUT" module)
+# module.prop etc. must sit at the ZIP ROOT for ksud module install;
+# zipping from inside the module dir avoids a module/ prefix layer.
+(cd "$MOD_SRC/module" && zip -qr9 "$ZIP_OUT" .)
 echo "module zip: $ZIP_OUT ($(wc -c < "$ZIP_OUT") bytes)"
 unzip -l "$ZIP_OUT"
