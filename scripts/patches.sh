@@ -830,6 +830,31 @@ kpm_patch_image() {
 	endgroup
 }
 
+# ------------------------------------------------ stock banner bake (605)
+#
+# Kernel-tamper detectors (春秋 etc.) read uname()/proc/version and compare
+# against the stock ColorOS build. SUSFS's set_uname only covers the
+# newuname() syscall, so /proc/version still leaks the CI banner
+# (kernelsu-action@Github-Action, clang 14, CI build date). Baking the
+# stock 605 values into init/version.c makes UTS_VERSION / LINUX_COMPILE_*
+# match the official LE2100_14.0.0.605 banner byte-for-byte -- for uname
+# AND /proc/version, with zero per-device configuration.
+banner_bake_605_apply() {
+	local patch="${REPO_ROOT}/patches/kernel/bake_stock_banner_605.diff"
+	local vc="${KERNEL_DIR}/init/version.c"
+
+	[ -f "$vc" ] || { warn "init/version.c not found; skipping banner bake"; return 0; }
+	if grep -qF 'OPLUS 605 stock build info baked' "$vc"; then
+		ok "stock banner bake already present; skipping"
+		return 0
+	fi
+	group "Baking OPLUS 605 stock build info into init/version.c"
+	( cd "$KERNEL_DIR" && apply_patch "$patch" 1 ) \
+		|| die "the stock banner bake patch did not apply; init/version.c has drifted"
+	summary "| stock banner bake (605) | applied |"
+	endgroup
+}
+
 # --------------------------------------------------------------------- main ---
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
@@ -874,6 +899,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 			ksud_bootstrap_apply
 			if is_true "${ENABLE_SUSFS:-false}"; then avc_spoof_feature_apply; fi
 			if is_true "${ENABLE_SELINUX_HIDE_419:-false}"; then selinux_hide_419_apply; fi
+			if is_true "${ENABLE_BANNER_BAKE_605:-false}"; then banner_bake_605_apply; fi
 			;;
 		ksud_bootstrap)        ksud_bootstrap_apply ;;
 		avc_spoof)             avc_spoof_feature_apply ;;
