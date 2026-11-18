@@ -56,7 +56,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  ssize_t my_write_context(struct file *file, char *buf, size_t size)
  {
      char *canon = NULL;
-@@ -1248,3 +1256,1171 @@ allow:
+@@ -1248,3 +1256,1234 @@ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }
@@ -385,6 +385,54 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +    return rc;
 +}
 +
++/*
++ * Timing-normalized fast precheck for the parse entry points: extract the
++ * type token (3rd field of u:r:TYPE:...) WITHOUT mutating the input, then
++ * look it up in the PRISTINE backup policy. Types that do not exist in the
++ * pristine view (KSU-added domains like u:r:ksu:s0, or attribute marks) can
++ * never pass the hide guard nor the dual parse -- the observable result is
++ * always -EINVAL -- so reject them immediately, BEFORE paying for the full
++ * stock conversion / live sidtab allocation. This removes the measurable
++ * timing asymmetry (attr/current write side channel, context validity
++ * oracles) between original and hidden contexts.
++ * Returns 1 to continue the normal parse path, 0 to fail fast with -EINVAL.
++ * Never rejects a context the full path would have accepted.
++ */
++static int ksu_context_type_precheck(const char *scontext, u32 scontext_len)
++{
++    char token[64];
++    struct type_datum *typdatum;
++    u32 i, tok = 0;
++    int fields = 0;
++    int rc = 1;
++
++    if (!scontext || !scontext_len || !BACKUP419)
++        return 1;
++
++    /* Non-mutating scan for the type token. */
++    for (i = 0; i < scontext_len; i++) {
++        if (scontext[i] == ':') {
++            if (fields == 2)
++                break; /* end of the type token */
++            fields++;
++            tok = 0;
++            continue;
++        }
++        if (fields == 2 && tok < sizeof(token) - 1)
++            token[tok++] = scontext[i];
++    }
++    if (fields < 2 || tok == 0)
++        return 1; /* malformed: let the stock parser produce its own error */
++
++    token[tok] = 0;
++    read_lock(hide_live_rwlock());
++    typdatum = symtab_search(&BACKUP419->policydb.p_types, token);
++    if (!typdatum || typdatum->attribute)
++        rc = 0; /* not in the pristine view: downstream is always -EINVAL */
++    read_unlock(hide_live_rwlock());
++    return rc;
++}
++
 +// parse once like security_context_to_sid(), -EAGAIN if the type mark is stale
 +static int security_context_to_sid_live(const char *scontext, u32 scontext_len, u32 *sid)
 +{
@@ -397,6 +445,12 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +        return -EINVAL;
 +
 +    *sid = SECSID_NULL;
++    // Timing normalization: hidden types can never pass the guard below,
++    // so bail out with the same -EINVAL they would end up with, but skip
++    // the stock conversion and the live sidtab churn.
++    if (!ksu_context_type_precheck(scontext, scontext_len))
++        return -EINVAL;
++
 +    // KernelSU: use the STOCK conversion. It takes its own policy_rwlock and
 +    // produces sidtab entries with the exact stock semantics, so the dedup
 +    // reuses the canonical entries created before selinux_hide went live.
@@ -877,6 +931,12 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +        ksu_avc_has_perm_compat(current_sid(), SECINITSID_SECURITY, SECCLASS_SECURITY, SECURITY__CHECK_CONTEXT, NULL);
 +    if (length)
 +        goto out;
++    // Timing normalization: same fast reject as the setprocattr path.
++    if (!ksu_context_type_precheck(buf, size)) {
++        length = -EINVAL;
++        goto out;
++    }
++
 +    length = security_context_to_sid_with_policy(BACKUP419, buf, size, &sid, SECSID_NULL, GFP_KERNEL, NULL, NULL);
 +    if (length) {
 +        goto out;
@@ -929,6 +989,10 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +
 +    sconlen = strlen(scon);
 +    tconlen = strlen(tcon);
++
++    // Timing normalization: same fast reject as the setprocattr path.
++    if (!ksu_context_type_precheck(scon, sconlen) || !ksu_context_type_precheck(tcon, tconlen))
++        goto out; /* length is already -EINVAL here */
 +
 +    length =
 +        security_context_to_sid_with_policy(BACKUP419, scon, sconlen, &ssid, SECSID_NULL, GFP_KERNEL, NULL, NULL);
