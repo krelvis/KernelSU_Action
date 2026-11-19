@@ -1,0 +1,63 @@
+# sus_path: hook the two dcache paths that the existing susfs 4.19
+# patch misses. lookup_fast() is the hot path taken by stat/open/
+# getdents on a cached dentry (both its RCU and ref branches), and
+# __lookup_slow() is the dcache-miss path taken after inode eviction.
+# Without these, sus_path only ever intercepts lookup_dcache() (used
+# by __lookup_hash, i.e. O_CREAT-style lookups) and link_path_walk()
+# intermediates, so an ext4 stat of a flagged path with a cold or RCU
+# fast path silently succeeds -- exactly what chunqiu's /data/system
+# probes exploit. The RCU branch must bail with -ECHILD (no dput under
+# RCU); the ref-walk redo then lands in the ref-branch check.
+diff --git a/fs/namei.c b/fs/namei.c
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -1585,9 +1585,19 @@ static int lookup_fast(struct nameidata *nd,
+ 		dentry = __d_lookup_rcu(parent, &nd->last, &seq);
+ 		if (unlikely(!dentry)) {
+ 			if (unlazy_walk(nd))
+ 				return -ECHILD;
+ 			return 0;
+ 		}
+ 
++
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++		/* sus_path: never complete an RCU walk through a flagged dentry;
++		 * bail out with -ECHILD so the ref-walk redo is caught by the
++		 * non-RCU check below. Reading the flag bit is RCU-safe:
++		 * inodes are freed via call_rcu. */
++		if (d_backing_inode(dentry) &&
++		    susfs_is_inode_sus_path(d_backing_inode(dentry)))
++			return -ECHILD;
++#endif
+ 		/*
+ 		 * This sequence count validates that the inode matches
+@@ -1631,5 +1631,12 @@ static int lookup_fast(struct nameidata *nd,
+ 	} else {
+ 		dentry = __d_lookup(parent, &nd->last);
+ 		if (unlikely(!dentry))
+ 			return 0;
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++		if (dentry->d_inode &&
++		    susfs_is_inode_sus_path(dentry->d_inode)) {
++			dput(dentry);
++			return -ENOENT;
++		}
++#endif
+ 		status = d_revalidate(dentry, nd->flags);
+@@ -1684,9 +1684,16 @@ static struct dentry *__lookup_slow(const struct qstr *name,
+ 	} else {
+ 		old = inode->i_op->lookup(inode, dentry, flags);
+ 		d_lookup_done(dentry);
+ 		if (unlikely(old)) {
+ 			dput(dentry);
+ 			dentry = old;
+ 		}
+ 	}
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++	if (!IS_ERR(dentry) && dentry->d_inode &&
++	    susfs_is_inode_sus_path(dentry->d_inode)) {
++		dput(dentry);
++		return ERR_PTR(-ENOENT);
++	}
++#endif
+ 	return dentry;

@@ -167,6 +167,23 @@ susfs_apply() {
        This usually means SUSFS_BRANCH does not match your kernel. Detected
        kernel ${kver}, used branch '${branch}'."
 
+	# 2b. sus_path lookup-path completion (repo-local, 4.19 OPLUS).
+	#     The upstream-adapted 50_* patch hooks only lookup_dcache(),
+	#     link_path_walk() intermediates and readdir filldir. On 4.19 a
+	#     plain stat/open of a cached dentry runs lookup_fast() (RCU and
+	#     ref branches) and a cold dentry runs __lookup_slow(); ext4 has
+	#     no d_revalidate, so a flagged path such as /data/system/junge
+	#     stat'ed by a normal app silently succeeds. Apply the
+	#     completion patch right after the main SUSFS patch.
+	local sus_path_patch="${REPO_ROOT}/patches/susfs/51_sus_path_lookup_fast_slow.patch"
+	if [ -f "$sus_path_patch" ] && $is_v2; then
+		( cd "$KERNEL_DIR" && apply_patch "$sus_path_patch" 1 ) \
+			|| die "the sus_path lookup_fast/__lookup_slow completion patch did not apply.
+       The fs/namei.c layout has drifted; re-derive hunks against the
+       current tree and update 51_sus_path_lookup_fast_slow.patch."
+		ok "sus_path lookup_fast/__lookup_slow hooks installed"
+	fi
+
 	# 3. Patch the KernelSU side -- but only when the variant does not already
 	#    ship SUSFS support. SukiSU-Ultra's 'builtin' branch, for instance,
 	#    declares CONFIG_KSU_SUSFS itself; applying the patch on top conflicts.
