@@ -44,8 +44,3 @@
  	return dentry;
  }
  
-@@ -5027,3 +5050,4 @@
- };
- EXPORT_SYMBOL(page_symlink_inode_operations);
- 
-+

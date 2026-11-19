@@ -222,21 +222,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	if (dentry) {
  		int error = d_revalidate(dentry, flags);
  		if (unlikely(error <= 0)) {
-@@ -2179,6 +2197,13 @@ static int link_path_walk(const char *name, struct nameidata *nd)
- 		err = may_lookup(nd);
- 		if (err)
- 			return err;
-+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-+		if (nd->inode && susfs_is_inode_sus_path(nd->inode)) {
-+			dput(nd->path.dentry);
-+			mntput(nd->path.mnt);
-+			return -ENOENT;
-+		}
-+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
- 
- 		hash_len = hash_name(nd->path.dentry, name);
- 
-@@ -4884,6 +4909,19 @@ int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
+@@ -4884,6 +4891,19 @@ int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
  	const char *link;
  	int res;
  
